@@ -128,6 +128,9 @@ type Queue struct {
 	Dir         string     `yaml:"dir"`
 	Workers     int        `yaml:"workers"`
 	MaxAttempts int        `yaml:"max_attempts"`
+	MaxAge      Duration   `yaml:"max_age"`
+	SendDSN     bool       `yaml:"send_dsn"`
+	DSNInbound  bool       `yaml:"dsn_inbound"`
 	Retry       []Duration `yaml:"retry_schedule"`
 }
 
@@ -268,7 +271,10 @@ func (c *Config) applyDefaults() {
 		c.Queue.Workers = 4
 	}
 	if c.Queue.MaxAttempts <= 0 {
-		c.Queue.MaxAttempts = 6
+		c.Queue.MaxAttempts = 100
+	}
+	if c.Queue.MaxAge <= 0 {
+		c.Queue.MaxAge = Duration(5 * 24 * time.Hour)
 	}
 	if len(c.Queue.Retry) == 0 {
 		c.Queue.Retry = []Duration{
@@ -340,6 +346,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Queue.Workers < 1 {
 		errs = append(errs, errors.New("queue.workers must be at least 1"))
+	}
+	if c.Queue.MaxAge.Std() < time.Hour {
+		errs = append(errs, errors.New("queue.max_age must be at least 1h"))
 	}
 	if c.Queue.MaxAttempts < 1 {
 		errs = append(errs, errors.New("queue.max_attempts must be at least 1"))

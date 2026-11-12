@@ -103,6 +103,10 @@ func LoadWithOptions(configPath string, opts LoadOptions) (*App, error) {
 		Dir:         cfg.Queue.Dir,
 		Workers:     cfg.Queue.Workers,
 		MaxAttempts: cfg.Queue.MaxAttempts,
+		MaxAge:      cfg.Queue.MaxAge.Std(),
+		SendDSN:     cfg.Queue.SendDSN,
+		DSNInbound:  cfg.Queue.DSNInbound,
+		Plugins:     runner,
 		Retry:       retry,
 		Logger:      logger,
 	}, rt)
@@ -242,6 +246,10 @@ func (a *App) statusHandler() http.Handler {
 	})
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		if !a.Server.Ready() || !a.Queue.Ready() {
+			http.Error(w, "not ready", http.StatusServiceUnavailable)
+			return
+		}
 		_, _ = w.Write([]byte("ready\n"))
 	})
 	mux.HandleFunc("/stats", func(w http.ResponseWriter, r *http.Request) {

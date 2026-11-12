@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -15,9 +16,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ferchd/gomta/delivery"
+	"github.com/ferchd/gomta/plugin"
 )
 
 // Recipient is one envelope recipient and its delivery state.
@@ -84,6 +87,10 @@ type Config struct {
 	Dir         string
 	Workers     int
 	MaxAttempts int
+	MaxAge      time.Duration
+	SendDSN     bool
+	DSNInbound  bool
+	Plugins     *plugin.Runner
 	Retry       []time.Duration
 	Logger      *slog.Logger
 }
@@ -100,6 +107,7 @@ type Manager struct {
 	mu       sync.Mutex
 	inflight map[string]bool
 	wg       sync.WaitGroup
+	ready    atomic.Bool
 }
 
 // New creates a queue manager. The spool directory is created lazily.
@@ -114,7 +122,10 @@ func New(cfg Config, router Router) (*Manager, error) {
 		cfg.Workers = 4
 	}
 	if cfg.MaxAttempts <= 0 {
-		cfg.MaxAttempts = 6
+		cfg.MaxAttempts = 100
+	}
+	if cfg.MaxAge <= 0 {
+		cfg.MaxAge = 5 * 24 * time.Hour
 	}
 	if len(cfg.Retry) == 0 {
 		cfg.Retry = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour, 6 * time.Hour}
@@ -190,6 +201,7 @@ func (m *Manager) Enqueue(ctx context.Context, env *Envelope, msg []byte) error 
 // canceled, then waits for in-flight deliveries.
 func (m *Manager) Start(ctx context.Context) error {
 	m.logger.Info("queue started", "dir", m.cfg.Dir, "workers", m.cfg.Workers)
+	defer m.ready.Store(false)
 	for i := 0; i < m.cfg.Workers; i++ {
 		m.wg.Add(1)
 		go m.worker(ctx)
@@ -197,6 +209,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	m.scan(ctx)
+	m.ready.Store(true)
 	for {
 		select {
 		case <-ctx.Done():
@@ -343,6 +356,7 @@ func (m *Manager) process(ctx context.Context, env *Envelope) {
 				err = delivery.Temp(errors.New("delivery backend returned no result"))
 			}
 			m.setResult(env, rcpt, err)
+			m.notifyDelivery(ctx, env, rcpt, err, msg)
 		}
 	}
 
@@ -384,7 +398,7 @@ func (m *Manager) setResult(env *Envelope, address string, err error) {
 		r.LastError = err.Error()
 		if delivery.IsTemporary(err) {
 			r.Attempts++
-			if r.Attempts >= m.cfg.MaxAttempts {
+			if r.Attempts >= m.cfg.MaxAttempts || (!env.Created.IsZero() && time.Since(env.Created) >= m.cfg.MaxAge) {
 				r.Status = "failed"
 				m.logger.Error("delivery failed permanently after retries", "queue_id", env.ID, "recipient", address, "error", err)
 			} else {
@@ -404,7 +418,7 @@ func (m *Manager) failAll(env *Envelope, err error) {
 		if env.Recipients[i].Status == "pending" {
 			env.Recipients[i].Attempts++
 			env.Recipients[i].LastError = err.Error()
-			if env.Recipients[i].Attempts >= m.cfg.MaxAttempts {
+			if env.Recipients[i].Attempts >= m.cfg.MaxAttempts || (!env.Created.IsZero() && time.Since(env.Created) >= m.cfg.MaxAge) {
 				env.Recipients[i].Status = "failed"
 			}
 		}
@@ -440,6 +454,10 @@ func (m *Manager) finish(env *Envelope, msg []byte) {
 		archived.NextAttempt = time.Time{}
 		if err := atomicWrite(filepath.Join(failedDir, env.ID+".json"), mustJSON(&archived), 0o600); err != nil {
 			m.logger.Error("queue: archive failed envelope", "id", env.ID, "error", err)
+			return
+		}
+		if err := m.sendFailureReport(env, failed); err != nil {
+			m.logger.Error("queue: cannot publish delivery status report", "id", env.ID, "error", err)
 			return
 		}
 		m.logger.Warn("message moved to failed queue", "queue_id", env.ID, "failed_recipients", len(failed))
@@ -555,4 +573,108 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 // SortRecipients is used by tests and diagnostics.
 func SortRecipients(rs []Recipient) {
 	sort.Slice(rs, func(i, j int) bool { return rs[i].Address < rs[j].Address })
+}
+
+ 
+// Ready reports whether the queue worker pool has started.
+func (m *Manager) Ready() bool { return m.ready.Load() }
+
+// notifyDelivery runs an observational post-delivery hook. Decisions cannot
+// retroactively change outcomes reported by a remote SMTP/LMTP server.
+func (m *Manager) notifyDelivery(ctx context.Context, env *Envelope, rcpt string, deliveryErr error, data []byte) {
+	if m.cfg.Plugins == nil {
+		return
+	}
+	tx := plugin.NewTx()
+	tx.ID = env.ID
+	tx.MailFrom = env.From
+	tx.Recipient = rcpt
+	tx.RcptTo = []string{rcpt}
+	tx.AuthUser = env.AuthUser
+	tx.Helo = env.Helo
+	tx.Mode = plugin.Mode(env.Mode)
+	tx.ServerName = env.ServerName
+	tx.RemoteIP = net.ParseIP(env.RemoteIP)
+	tx.Data = data
+	tx.Size = int64(len(data))
+	if deliveryErr == nil {
+		tx.SetMeta("delivery.result", "success")
+	} else {
+		tx.SetMeta("delivery.result", "failure")
+		tx.SetMeta("delivery.error", deliveryErr.Error())
+	}
+	if result := m.cfg.Plugins.Run(ctx, plugin.HookDelivery, tx); result.Rejected() {
+		m.logger.Warn("post-delivery hook rejected an immutable outcome", "queue_id", env.ID, "recipient", rcpt)
+	}
+}
+
+// sendFailureReport enqueues a best-effort, idempotently named DSN for
+// authenticated submission. Inbound reports require an explicit opt-in to
+// prevent backscatter from forged sender addresses.
+func (m *Manager) sendFailureReport(env *Envelope, failed []Recipient) error {
+	if !m.cfg.SendDSN || env.From == "" || !plugin.ValidAddress(env.From, false) {
+		return nil
+	}
+	if !m.cfg.DSNInbound && !strings.EqualFold(env.AuthUser, env.From) {
+		return nil
+	}
+	marker := filepath.Join(m.cfg.Dir, "failed", env.ID+".dsn")
+	if _, err := os.Stat(marker); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	id := env.ID + "-dsn"
+	// If a prior attempt published the DSN but failed to store its marker,
+	// preserve the existing queue record instead of overwriting it.
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, id+".json")); err == nil {
+		return atomicWrite(marker, []byte("queued\n"), 0o600)
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	host := env.ServerName
+	if !plugin.ValidAddress("postmaster@"+host, false) {
+		host = "localhost"
+	}
+	message := buildDSNMessage(host, env, failed)
+	report := &Envelope{
+		ID: id, From: "", Mode: string(plugin.ModeMTA), ServerName: host,
+		Recipients: []Recipient{{Address: env.From, Status: "pending"}},
+	}
+	if err := m.Enqueue(context.Background(), report, message); err != nil {
+		return err
+	}
+	return atomicWrite(marker, []byte("queued\n"), 0o600)
+}
+
+func buildDSNMessage(host string, env *Envelope, failed []Recipient) []byte {
+	boundary := "gomta-" + env.ID
+	var b strings.Builder
+	fmt.Fprintf(&b, "From: Mail Delivery Subsystem <postmaster@%s>\r\n", host)
+	fmt.Fprintf(&b, "To: <%s>\r\n", env.From)
+	b.WriteString("Subject: Delivery Status Notification (Failure)\r\n")
+	b.WriteString("Auto-Submitted: auto-replied\r\n")
+	b.WriteString("MIME-Version: 1.0\r\n")
+	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().UTC().Format(time.RFC1123Z))
+	fmt.Fprintf(&b, "Content-Type: multipart/report; report-type=delivery-status; boundary=%q\r\n\r\n", boundary)
+	fmt.Fprintf(&b, "--%s\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n", boundary)
+	b.WriteString("Your message could not be delivered to the following recipients:\r\n")
+	for _, r := range failed {
+		fmt.Fprintf(&b, "  %s\r\n", plugin.SanitizeHeaderValue(r.Address))
+	}
+	fmt.Fprintf(&b, "\r\n--%s\r\nContent-Type: message/delivery-status\r\n\r\n", boundary)
+	fmt.Fprintf(&b, "Reporting-MTA: dns; %s\r\n\r\n", host)
+	for _, r := range failed {
+		fmt.Fprintf(&b, "Final-Recipient: rfc822; %s\r\nAction: failed\r\nStatus: 5.0.0\r\n", plugin.SanitizeHeaderValue(r.Address))
+		reason := plugin.SanitizeHeaderValue(r.LastError)
+		if len(reason) > 240 {
+			reason = reason[:240]
+		}
+		if reason != "" {
+			fmt.Fprintf(&b, "Diagnostic-Code: smtp; %s\r\n", reason)
+		}
+		b.WriteString("\r\n")
+	}
+	fmt.Fprintf(&b, "--%s--\r\n", boundary)
+	return []byte(b.String())
 }
