@@ -345,7 +345,11 @@ func TestMalformedEnvelopeIsPreservedRatherThanRetried(t *testing.T) {
 		t.Fatal(err)
 	}
 	bad := []byte("{invalid-json")
+	originalPayload := []byte("From: sender@example.test\r\n\r\nOriginal payload\r\n")
 	if err := atomicWrite(filepath.Join(m.cfg.Dir, "corrupt-raw.json"), bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWrite(filepath.Join(m.cfg.Dir, "corrupt-raw.eml"), originalPayload, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	m.scan(context.Background())
@@ -355,6 +359,13 @@ func TestMalformedEnvelopeIsPreservedRatherThanRetried(t *testing.T) {
 	}
 	if string(raw) != string(bad) {
 		t.Fatalf("raw bytes changed: %q", raw)
+	}
+	preservedPayload, err := os.ReadFile(filepath.Join(m.cfg.Dir, "corrupt", "corrupt-raw.eml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(preservedPayload) != string(originalPayload) {
+		t.Fatalf("payload content changed: %q", preservedPayload)
 	}
 	if _, err := os.Stat(filepath.Join(m.cfg.Dir, "corrupt-raw.json")); !os.IsNotExist(err) {
 		t.Fatalf("bad visible envelope remains: %v", err)
