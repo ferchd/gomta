@@ -247,6 +247,7 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 		}
 		sortResults(res.Outcomes)
 		for i := range res.Outcomes {
+			r.enforceBodyLimit(tx, &res.Outcomes[i])
 			r.applyOutcome(tx, &res.Outcomes[i], false)
 		}
 	}
@@ -286,6 +287,7 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 			break
 		}
 		pr.index = ie.index
+		r.enforceBodyLimit(tx, &pr)
 		res.Outcomes = append(res.Outcomes, pr)
 		r.applyOutcome(tx, &pr, true)
 	}
@@ -391,6 +393,7 @@ func snapshotTx(src *Tx) *Tx {
 		dst.Header[key] = append([]string(nil), values...)
 	}
 	dst.Size = src.Size
+	dst.MaxBodyBytes = src.MaxBodyBytes
 	dst.Mode = src.Mode
 	dst.ServerName = src.ServerName
 	dst.Arrived = src.Arrived
@@ -582,4 +585,18 @@ func cloneMetaSnapshot(src map[string]any) map[string]any {
 		out[key] = cloneMetadata(value)
 	}
 	return out
+}
+
+ 
+// enforceBodyLimit refuses an oversized plugin replacement before applying it
+// to the transaction or allowing subsequent ordered filters to copy it.
+func (r *Runner) enforceBodyLimit(tx *Tx, pr *PluginResult) {
+	if pr.Err != nil || pr.Outcome.Body == nil || tx.MaxBodyBytes <= 0 {
+		return
+	}
+	if int64(len(pr.Outcome.Body)) > tx.MaxBodyBytes {
+		pr.Outcome = TempFail(451, "4.3.1 Content filter exceeded maximum message size")
+		pr.meta = nil
+		pr.headers = nil
+	}
 }

@@ -187,6 +187,7 @@ type Tx struct {
 	Data       []byte
 	Header     textproto.MIMEHeader
 	Size       int64
+	MaxBodyBytes int64 // maximum permitted data after transformations, zero = unrestricted
 	Mode       Mode
 	ServerName string
 	Arrived    time.Time
