@@ -3,9 +3,9 @@ package delivery
 import (
 	"bytes"
 	"context"
-	"errors"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os/exec"
 	"time"

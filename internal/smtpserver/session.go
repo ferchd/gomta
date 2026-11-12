@@ -308,7 +308,7 @@ func (s *session) Data(r io.Reader) error {
 	if err := s.srv.memory.acquire(budgetCtx, max+1); err != nil {
 		return smtpError(452, 4, 3, 1, "Insufficient memory budget for message")
 	}
-	defer s.srv.memory.release(max+1)
+	defer s.srv.memory.release(max + 1)
 	s.tx.ID = queue.NewID()
 	s.tx.Arrived = time.Now()
 	data, err := io.ReadAll(io.LimitReader(r, max+1))

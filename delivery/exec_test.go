@@ -10,7 +10,7 @@ import (
 func TestExecTimeoutIsTemporary(t *testing.T) {
 	b, err := NewExec(plugin.BuildContext{BaseDir: t.TempDir()}, plugin.Options{
 		"command": "sleep",
-		"args": []string{"2"},
+		"args":    []string{"2"},
 		"timeout": "20ms",
 	})
 	if err != nil {

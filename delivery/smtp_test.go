@@ -8,9 +8,9 @@ import (
 
 func TestAuthenticatedRelayRequiresVerifiedTLS(t *testing.T) {
 	for _, tc := range []struct {
-		mode string
+		mode     string
 		insecure bool
-		wantErr bool
+		wantErr  bool
 	}{
 		{"none", false, true},
 		{"opportunistic", false, true},
@@ -19,10 +19,10 @@ func TestAuthenticatedRelayRequiresVerifiedTLS(t *testing.T) {
 		{"implicit", false, false},
 	} {
 		_, err := NewSMTP(plugin.BuildContext{}, plugin.Options{
-			"smarthost": "localhost:2525",
-			"username": "user@example.test",
-			"password": "secret",
-			"tls": tc.mode,
+			"smarthost":            "localhost:2525",
+			"username":             "user@example.test",
+			"password":             "secret",
+			"tls":                  tc.mode,
 			"insecure_skip_verify": tc.insecure,
 		})
 		if (err != nil) != tc.wantErr {
