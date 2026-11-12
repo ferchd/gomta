@@ -56,6 +56,7 @@ type maildirQuota struct {
 	used      int64
 	mailboxes map[string]int64
 	lastScan  time.Time
+	inflight  int
 }
 
 func (b *maildirBackend) Name() string { return "maildir" }
@@ -70,26 +71,13 @@ func (b *maildirBackend) Deliver(ctx context.Context, m *Message) map[string]err
 
 func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 	domain := plugin.Domain(rcpt)
-	// The configured user store treats local parts case-insensitively, so
-	// local Maildir paths must use the same canonical mailbox identity.
+	// User identities are case-insensitive in the configured users store.
 	local := strings.ToLower(plugin.LocalPart(rcpt))
 	if domain == "" || local == "" {
 		return Perm(fmt.Errorf("invalid recipient %q", rcpt))
 	}
 	domainPath := filepath.Join(b.root, safeComponent(domain))
 	box := filepath.Join(domainPath, safeComponent(local))
-	quota := b.quotaFor(domain)
-	quota.mu.Lock()
-	defer quota.mu.Unlock()
-	for _, sub := range []string{"tmp", "new", "cur"} {
-		if err := os.MkdirAll(filepath.Join(box, sub), 0o700); err != nil {
-			return Temp(fmt.Errorf("create maildir: %w", err))
-		}
-	}
-	host := b.hostname
-	if host == "" {
-		host, _ = os.Hostname()
-	}
 	data := plugin.PrependHeaders(m.Data, []plugin.Header{
 		{Name: "Delivered-To", Value: rcpt},
 		{Name: "X-Original-To", Value: rcpt},
@@ -97,34 +85,61 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		data = append(data, '\n')
 	}
+	size := int64(len(data))
+	// Reserve quota under the per-domain mutex; perform expensive file I/O
+	// outside it. Concurrent deliveries still see each other's reservations.
+	q := b.quotaFor(domain)
+	onDisk := false
 	if b.maxMailboxBytes > 0 || b.maxDomainBytes > 0 {
-		// Reconcile periodically for external mailbox deletions, not per delivery.
-		if quota.lastScan.IsZero() || time.Since(quota.lastScan) >= 5*time.Minute {
-			if err := quota.reconcile(domainPath); err != nil {
+		q.mu.Lock()
+		if q.inflight == 0 && (q.lastScan.IsZero() || time.Since(q.lastScan) >= 5*time.Minute) {
+			if err := q.reconcile(domainPath); err != nil {
+				q.mu.Unlock()
 				return Temp(fmt.Errorf("inspect Maildir usage: %w", err))
 			}
 		}
-		if (b.maxMailboxBytes > 0 && quota.mailboxes[safeComponent(local)]+int64(len(data)) > b.maxMailboxBytes) ||
-			(b.maxDomainBytes > 0 && quota.used+int64(len(data)) > b.maxDomainBytes) {
-			// Recheck on refusal: a mailbox reader may have deleted older mail.
-			if err := quota.reconcile(domainPath); err != nil {
+		if q.inflight == 0 && ((b.maxMailboxBytes > 0 && q.mailboxes[safeComponent(local)]+size > b.maxMailboxBytes) ||
+			(b.maxDomainBytes > 0 && q.used+size > b.maxDomainBytes)) {
+			// External readers may have removed mail since the last scan.
+			if err := q.reconcile(domainPath); err != nil {
+				q.mu.Unlock()
 				return Temp(fmt.Errorf("reconcile Maildir usage: %w", err))
 			}
 		}
-		if b.maxMailboxBytes > 0 && quota.mailboxes[safeComponent(local)]+int64(len(data)) > b.maxMailboxBytes {
+		if b.maxMailboxBytes > 0 && q.mailboxes[safeComponent(local)]+size > b.maxMailboxBytes {
+			q.mu.Unlock()
 			return Temp(fmt.Errorf("recipient mailbox quota exceeded"))
 		}
-		if b.maxDomainBytes > 0 && quota.used+int64(len(data)) > b.maxDomainBytes {
+		if b.maxDomainBytes > 0 && q.used+size > b.maxDomainBytes {
+			q.mu.Unlock()
 			return Temp(fmt.Errorf("recipient domain quota exceeded"))
 		}
+		q.inflight++
+		q.used += size
+		q.mailboxes[safeComponent(local)] += size
+		q.mu.Unlock()
+		defer func() {
+			q.mu.Lock()
+			q.inflight--
+			if !onDisk {
+				q.used -= size
+				q.mailboxes[safeComponent(local)] -= size
+			}
+			q.mu.Unlock()
+		}()
 	}
+	for _, sub := range []string{"tmp", "new", "cur"} {
+		if err := os.MkdirAll(filepath.Join(box, sub), 0o700); err != nil {
+			return Temp(fmt.Errorf("create maildir: %w", err))
+		}
+	}
+	host := b.hostname
+	if host == "" { host, _ = os.Hostname() }
 	name := fmt.Sprintf("%d.%d.%s.%s", time.Now().UnixNano(), os.Getpid(), randomHex(6), safeComponent(host))
 	tmp := filepath.Join(box, "tmp", name)
 	dst := filepath.Join(box, "new", name)
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return Temp(fmt.Errorf("create maildir file: %w", err))
-	}
+	if err != nil { return Temp(fmt.Errorf("create maildir file: %w", err)) }
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)
@@ -143,11 +158,7 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 		_ = os.Remove(tmp)
 		return Temp(fmt.Errorf("rename maildir file: %w", err))
 	}
-	// fsync the new/ directory: syncing the file alone does not persist the
-	// directory entry across a power failure on many POSIX filesystems.
-	// A renamed message already occupies capacity even if directory sync fails.
-	quota.used += int64(len(data))
-	quota.mailboxes[safeComponent(local)] += int64(len(data))
+	onDisk = true
 	if runtime.GOOS != "windows" {
 		if err := syncMaildir(filepath.Dir(dst)); err != nil {
 			return Temp(fmt.Errorf("sync maildir directory: %w", err))

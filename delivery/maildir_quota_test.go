@@ -3,6 +3,7 @@ package delivery
 import (
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -61,4 +62,28 @@ func TestMaildirCanonicalizesCaseInsensitiveMailbox(t *testing.T) {
 	if len(entries) != 1 || entries[0].Name() != "alice" {
 		t.Fatalf("expected only canonical alice mailbox, got %+v", entries)
 	}
+}
+
+ 
+func TestMaildirConcurrentDeliveriesShareQuota(t *testing.T) {
+	root := t.TempDir()
+	b := &maildirBackend{root:root, maxMailboxBytes:1<<20, maxDomainBytes:1<<21, quotas:make(map[string]*maildirQuota)}
+	msg := &Message{ID:"parallel", Data: []byte("From: test@example.test\r\n\r\ncontent\r\n")}
+	const count = 30
+	var wg sync.WaitGroup
+	for i:=0;i<count;i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := b.deliverOne("alice@example.test",msg); err != nil { t.Errorf("delivery: %v",err) }
+		}()
+	}
+	wg.Wait()
+	items,err:=os.ReadDir(filepath.Join(root,"example.test","alice","new"))
+	if err != nil {t.Fatal(err)}
+	if len(items)!=count {t.Fatalf("expected %d files, got %d",count,len(items))}
+	q:=b.quotaFor("example.test")
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.inflight!=0 {t.Fatalf("reservations leaked: %d",q.inflight)}
 }

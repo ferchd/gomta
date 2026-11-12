@@ -353,7 +353,7 @@ func (r *Runner) runOne(ctx context.Context, ie indexedEntry, hook Hook, tx *Tx)
 	// No plugin receives the parent transaction. Even a callback that ignores
 	// cancellation can only mutate its isolated snapshot.
 	local := snapshotTx(tx)
-	before := local.MetaSnapshot()
+	before := cloneMetaSnapshot(local.MetaSnapshot())
 	started := time.Now()
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -361,7 +361,7 @@ func (r *Runner) runOne(ctx context.Context, ie indexedEntry, hook Hook, tx *Tx)
 		}
 		pr.Duration = time.Since(started)
 		if pr.Err == nil {
-			pr.meta = changedMeta(before, local.MetaSnapshot())
+			pr.meta = changedMeta(before, cloneMetaSnapshot(local.MetaSnapshot()))
 			pr.headers = local.AddedHeaders()
 		}
 	}()
@@ -571,4 +571,14 @@ func cloneMetadata(v any) any {
 	default:
 		return v
 	}
+}
+
+ 
+// cloneMetaSnapshot detaches the nested values before a plugin executes so
+// in-place modifications become visible to changedMeta and do not leak back
+// into the original transaction while the plugin is still running.
+func cloneMetaSnapshot(src map[string]any) map[string]any {
+	out := make(map[string]any, len(src))
+	for key, value := range src { out[key] = cloneMetadata(value) }
+	return out
 }
