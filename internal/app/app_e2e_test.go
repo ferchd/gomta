@@ -165,7 +165,7 @@ func TestEndToEndSubmissionAndMTA(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	submitted := testMessage("Alice <alice@example.com>", res.AdminUser, "e2e submission", "hello from submission")
+	submitted := testMessage("Postmaster <"+res.AdminUser+">", res.AdminUser, "e2e submission", "hello from submission")
 	if _, err := w.Write(submitted); err != nil {
 		t.Fatal(err)
 	}
