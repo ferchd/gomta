@@ -256,7 +256,7 @@ limits:
   write_timeout: 5m
   idle_timeout: 5m
   max_auth_failures: 5
-  validate_local_recipients: false
+  validate_local_recipients: true
 
 tls:
   cert_file: tls/cert.pem
@@ -285,6 +285,8 @@ routing:
   local_backend: maildir
   local_options:
     path: mail
+    max_mailbox_bytes: 536870912
+    max_domain_bytes: 5368709120
   outbound_backend: smtp
   outbound_options:
     tls: opportunistic
@@ -375,9 +377,11 @@ plugins:
   - name: rate_limit
     priority: 30
     options:
-      scope: ip+sender
+      scope: smart
       limit: 200
       window: 1h
+      skip_authenticated: false
+      fail_closed: true
       action: tempfail
 
   # Enable after configuring a recursive resolver with Spamhaus data access.

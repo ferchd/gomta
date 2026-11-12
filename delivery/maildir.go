@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ferchd/gomta/plugin"
@@ -29,12 +31,20 @@ func NewMaildir(bc plugin.BuildContext, opts plugin.Options) (Backend, error) {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return nil, fmt.Errorf("create maildir root: %w", err)
 	}
-	return &maildirBackend{root: path, hostname: opts.String("hostname", "")}, nil
+	return &maildirBackend{
+		root: path,
+		hostname: opts.String("hostname", ""),
+		maxMailboxBytes: int64(opts.Int("max_mailbox_bytes", 512*1024*1024)),
+		maxDomainBytes: int64(opts.Int("max_domain_bytes", 5*1024*1024*1024)),
+	}, nil
 }
 
 type maildirBackend struct {
 	root     string
 	hostname string
+	mu sync.Mutex
+	maxMailboxBytes int64
+	maxDomainBytes int64
 }
 
 func (b *maildirBackend) Name() string { return "maildir" }
@@ -54,6 +64,10 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 		return Perm(fmt.Errorf("invalid recipient %q", rcpt))
 	}
 	box := filepath.Join(b.root, safeComponent(domain), safeComponent(local))
+	// Serialize quota checks and writes for this backend. This is a
+	// single-instance safeguard, not a shared-filesystem distributed quota.
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	for _, sub := range []string{"tmp", "new", "cur"} {
 		if err := os.MkdirAll(filepath.Join(box, sub), 0o700); err != nil {
 			return Temp(fmt.Errorf("create maildir: %w", err))
@@ -69,6 +83,24 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 	})
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		data = append(data, '\n')
+	}
+	if b.maxMailboxBytes > 0 {
+		current, err := maildirUsage(box)
+		if err != nil {
+			return Temp(fmt.Errorf("inspect mailbox quota: %w", err))
+		}
+		if current+int64(len(data)) > b.maxMailboxBytes {
+			return Temp(fmt.Errorf("recipient mailbox quota exceeded"))
+		}
+	}
+	if b.maxDomainBytes > 0 {
+		current, err := maildirUsage(filepath.Join(b.root, safeComponent(domain)))
+		if err != nil {
+			return Temp(fmt.Errorf("inspect domain quota: %w", err))
+		}
+		if current+int64(len(data)) > b.maxDomainBytes {
+			return Temp(fmt.Errorf("recipient domain quota exceeded"))
+		}
 	}
 	name := fmt.Sprintf("%d.%d.%s.%s", time.Now().UnixNano(), os.Getpid(), randomHex(6), safeComponent(host))
 	tmp := filepath.Join(box, "tmp", name)
@@ -97,8 +129,10 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 	}
 	// fsync the new/ directory: syncing the file alone does not persist the
 	// directory entry across a power failure on many POSIX filesystems.
-	if err := syncMaildir(filepath.Dir(dst)); err != nil {
-		return Temp(fmt.Errorf("sync maildir directory: %w", err))
+	if runtime.GOOS != "windows" {
+		if err := syncMaildir(filepath.Dir(dst)); err != nil {
+			return Temp(fmt.Errorf("sync maildir directory: %w", err))
+		}
 	}
 	return nil
 }
@@ -147,4 +181,30 @@ func syncMaildir(path string) error {
 	}
 	defer f.Close()
 	return f.Sync()
+}
+
+ 
+func maildirUsage(root string) (int64, error) {
+	var size int64
+	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !entry.Type().IsRegular() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		size += info.Size()
+		return nil
+	})
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	return size, err
 }

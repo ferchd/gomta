@@ -15,6 +15,7 @@ import (
 	"github.com/emersion/go-sasl"
 	"github.com/emersion/go-smtp"
 	"github.com/ferchd/gomta/internal/app"
+	"github.com/ferchd/gomta/internal/auth"
 	"github.com/ferchd/gomta/internal/dkimkey"
 	_ "github.com/ferchd/gomta/internal/plugins/all"
 	"github.com/ferchd/gomta/internal/setup"
@@ -111,6 +112,11 @@ func TestEndToEndSubmissionAndMTA(t *testing.T) {
 		t.Fatal(err)
 	}
 	patchConfig(t, res.ConfigPath)
+	// The generated configuration validates local recipients. Make Bob an
+	// explicitly provisioned local mailbox for the inbound-MTA scenario.
+	if err := auth.WriteUser(filepath.Join(res.Dir, "users.txt"), "bob@example.com", "correct horse battery"); err != nil {
+		t.Fatal(err)
+	}
 
 	a, err := app.LoadWithOptions(res.ConfigPath, app.LoadOptions{LogLevel: "error"})
 	if err != nil {
