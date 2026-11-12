@@ -573,12 +573,13 @@ func cloneMetadata(v any) any {
 	}
 }
 
- 
 // cloneMetaSnapshot detaches the nested values before a plugin executes so
 // in-place modifications become visible to changedMeta and do not leak back
 // into the original transaction while the plugin is still running.
 func cloneMetaSnapshot(src map[string]any) map[string]any {
 	out := make(map[string]any, len(src))
-	for key, value := range src { out[key] = cloneMetadata(value) }
+	for key, value := range src {
+		out[key] = cloneMetadata(value)
+	}
 	return out
 }

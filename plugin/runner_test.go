@@ -242,19 +242,24 @@ func TestSnapshotMetadataDoesNotShareNestedMap(t *testing.T) {
 	}
 }
 
- 
 func TestPluginNestedMetadataChangesArePropagated(t *testing.T) {
 	plugin := &testPlugin{name: "metadata", hooks: []Hook{HookData}, run: func(_ context.Context, _ Hook, tx *Tx) (Outcome, error) {
 		v, ok := tx.Meta("nested")
-		if !ok { t.Fatal("metadata absent") }
+		if !ok {
+			t.Fatal("metadata absent")
+		}
 		v.(map[string]any)["inside"].(map[string]any)["count"] = 2
 		return OK(), nil
 	}}
-	r := newTestRunner(t, map[Hook][]entry{HookData: {testEntry(plugin,0,0)}})
+	r := newTestRunner(t, map[Hook][]entry{HookData: {testEntry(plugin, 0, 0)}})
 	tx := NewTx()
-	tx.SetMeta("nested", map[string]any{"inside": map[string]any{"count":1}})
+	tx.SetMeta("nested", map[string]any{"inside": map[string]any{"count": 1}})
 	out := r.Run(context.Background(), HookData, tx)
-	if out.Decision.Action != ActionContinue { t.Fatal(out.Decision) }
-	value,_ := tx.Meta("nested")
-	if value.(map[string]any)["inside"].(map[string]any)["count"] != 2 { t.Fatal("in-place nested metadata modification was lost") }
+	if out.Decision.Action != ActionContinue {
+		t.Fatal(out.Decision)
+	}
+	value, _ := tx.Meta("nested")
+	if value.(map[string]any)["inside"].(map[string]any)["count"] != 2 {
+		t.Fatal("in-place nested metadata modification was lost")
+	}
 }

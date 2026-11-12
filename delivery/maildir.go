@@ -134,12 +134,16 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 		}
 	}
 	host := b.hostname
-	if host == "" { host, _ = os.Hostname() }
+	if host == "" {
+		host, _ = os.Hostname()
+	}
 	name := fmt.Sprintf("%d.%d.%s.%s", time.Now().UnixNano(), os.Getpid(), randomHex(6), safeComponent(host))
 	tmp := filepath.Join(box, "tmp", name)
 	dst := filepath.Join(box, "new", name)
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil { return Temp(fmt.Errorf("create maildir file: %w", err)) }
+	if err != nil {
+		return Temp(fmt.Errorf("create maildir file: %w", err))
+	}
 	if _, err := f.Write(data); err != nil {
 		_ = f.Close()
 		_ = os.Remove(tmp)

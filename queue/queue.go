@@ -85,17 +85,17 @@ type Router interface {
 
 // Config configures the queue manager.
 type Config struct {
-	Dir         string
-	Workers     int
-	MaxAttempts int
-	MaxAge      time.Duration
-	OrphanGrace time.Duration
+	Dir             string
+	Workers         int
+	MaxAttempts     int
+	MaxAge          time.Duration
+	OrphanGrace     time.Duration
 	FailedRetention time.Duration
-	SendDSN     bool
-	DSNInbound  bool
-	Plugins     *plugin.Runner
-	Retry       []time.Duration
-	Logger      *slog.Logger
+	SendDSN         bool
+	DSNInbound      bool
+	Plugins         *plugin.Runner
+	Retry           []time.Duration
+	Logger          *slog.Logger
 }
 
 // Manager owns the spool and delivery workers.
@@ -754,27 +754,43 @@ func (m *Manager) cleanupSpool(now time.Time) {
 	}
 	cutoff := now.Add(-m.cfg.OrphanGrace)
 	for _, entry := range entries {
-		if entry.IsDir() { continue }
+		if entry.IsDir() {
+			continue
+		}
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".eml") && !strings.HasPrefix(name, ".tmp-") { continue }
+		if !strings.HasSuffix(name, ".eml") && !strings.HasPrefix(name, ".tmp-") {
+			continue
+		}
 		info, err := entry.Info()
-		if err != nil || info.ModTime().After(cutoff) { continue }
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
 		if strings.HasSuffix(name, ".eml") {
 			id := strings.TrimSuffix(name, ".eml")
 			m.mu.Lock()
 			active := m.inflight[id]
 			m.mu.Unlock()
-			if active { continue }
-			if _, err := os.Stat(filepath.Join(m.cfg.Dir, id+".json")); err == nil { continue } else if !os.IsNotExist(err) { continue }
+			if active {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(m.cfg.Dir, id+".json")); err == nil {
+				continue
+			} else if !os.IsNotExist(err) {
+				continue
+			}
 		}
 		if err := os.Remove(filepath.Join(m.cfg.Dir, name)); err != nil && !os.IsNotExist(err) {
 			m.logger.Warn("spool cleanup: remove orphan failed", "name", name, "error", err)
 		}
 	}
-	if m.cfg.FailedRetention <= 0 { return }
+	if m.cfg.FailedRetention <= 0 {
+		return
+	}
 	failedDir := filepath.Join(m.cfg.Dir, "failed")
 	archived, err := os.ReadDir(failedDir)
-	if os.IsNotExist(err) { return }
+	if os.IsNotExist(err) {
+		return
+	}
 	if err != nil {
 		m.logger.Warn("spool cleanup: cannot read failed archive", "error", err)
 		return
@@ -783,36 +799,66 @@ func (m *Manager) cleanupSpool(now time.Time) {
 	// First expire archive envelopes, then their payloads; never remove an
 	// archive payload whose envelope is still present and potentially readable.
 	for _, entry := range archived {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") { continue }
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
 		info, err := entry.Info()
-		if err != nil || info.ModTime().After(retentionCutoff) { continue }
+		if err != nil || info.ModTime().After(retentionCutoff) {
+			continue
+		}
 		id := strings.TrimSuffix(entry.Name(), ".json")
 		m.mu.Lock()
 		active := m.inflight[id]
 		m.mu.Unlock()
-		if active { continue }
-		if _, err := os.Stat(filepath.Join(m.cfg.Dir, id+".json")); err == nil { continue } else if !os.IsNotExist(err) { continue }
+		if active {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(m.cfg.Dir, id+".json")); err == nil {
+			continue
+		} else if !os.IsNotExist(err) {
+			continue
+		}
 		path := filepath.Join(failedDir, entry.Name())
 		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 			m.logger.Warn("spool cleanup: failed archive envelope removal", "name", entry.Name(), "error", err)
 		}
 	}
 	for _, entry := range archived {
-		if entry.IsDir() { continue }
+		if entry.IsDir() {
+			continue
+		}
 		name := entry.Name()
-		if !strings.HasSuffix(name, ".eml") && !strings.HasSuffix(name, ".dsn") { continue }
+		if !strings.HasSuffix(name, ".eml") && !strings.HasSuffix(name, ".dsn") {
+			continue
+		}
 		info, err := entry.Info()
-		if err != nil || info.ModTime().After(retentionCutoff) { continue }
+		if err != nil || info.ModTime().After(retentionCutoff) {
+			continue
+		}
 		id := strings.TrimSuffix(strings.TrimSuffix(name, ".eml"), ".dsn")
 		if strings.HasSuffix(name, ".dsn") {
 			// Markers are retained while their originating message is still
 			// visible in the queue or archive, preventing repeated DSNs.
 			origin := id
-			if pos := strings.LastIndex(origin, "-dsn-"); pos >= 0 { origin = origin[:pos] }
-			if _, err := os.Stat(filepath.Join(m.cfg.Dir, origin+".json")); err == nil { continue } else if !os.IsNotExist(err) { continue }
-			if _, err := os.Stat(filepath.Join(failedDir, origin+".json")); err == nil { continue } else if !os.IsNotExist(err) { continue }
+			if pos := strings.LastIndex(origin, "-dsn-"); pos >= 0 {
+				origin = origin[:pos]
+			}
+			if _, err := os.Stat(filepath.Join(m.cfg.Dir, origin+".json")); err == nil {
+				continue
+			} else if !os.IsNotExist(err) {
+				continue
+			}
+			if _, err := os.Stat(filepath.Join(failedDir, origin+".json")); err == nil {
+				continue
+			} else if !os.IsNotExist(err) {
+				continue
+			}
 		} else {
-			if _, err := os.Stat(filepath.Join(failedDir, id+".json")); err == nil { continue } else if !os.IsNotExist(err) { continue }
+			if _, err := os.Stat(filepath.Join(failedDir, id+".json")); err == nil {
+				continue
+			} else if !os.IsNotExist(err) {
+				continue
+			}
 		}
 		if err := os.Remove(filepath.Join(failedDir, name)); err != nil && !os.IsNotExist(err) {
 			m.logger.Warn("spool cleanup: remove expired archive artifact failed", "name", name, "error", err)
