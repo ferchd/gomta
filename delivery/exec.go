@@ -3,6 +3,7 @@ package delivery
 import (
 	"bytes"
 	"context"
+	"errors"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -79,9 +80,15 @@ func (b *execBackend) Deliver(ctx context.Context, m *Message) map[string]error 
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		var e error
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() == 75 {
+		var exitErr *exec.ExitError
+		switch {
+		case runCtx.Err() != nil:
+			e = Temp(fmt.Errorf("exec backend interrupted: %w", runCtx.Err()))
+		case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+			e = Temp(err)
+		case errors.As(err, &exitErr) && exitErr.ExitCode() == 75:
 			e = Temp(fmt.Errorf("exec backend temporary failure: %s", stderr.String()))
-		} else {
+		default:
 			e = Perm(fmt.Errorf("exec backend failed: %v: %s", err, stderr.String()))
 		}
 		for _, rcpt := range m.To {

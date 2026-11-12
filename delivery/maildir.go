@@ -95,6 +95,11 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 		_ = os.Remove(tmp)
 		return Temp(fmt.Errorf("rename maildir file: %w", err))
 	}
+	// fsync the new/ directory: syncing the file alone does not persist the
+	// directory entry across a power failure on many POSIX filesystems.
+	if err := syncMaildir(filepath.Dir(dst)); err != nil {
+		return Temp(fmt.Errorf("sync maildir directory: %w", err))
+	}
 	return nil
 }
 
@@ -132,4 +137,14 @@ func randomHex(n int) string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(buf)
+}
+
+// syncMaildir makes the successfully renamed mailbox entry durable on POSIX.
+func syncMaildir(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return f.Sync()
 }
