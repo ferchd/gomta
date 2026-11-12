@@ -189,7 +189,31 @@ func (a *App) Run(ctx context.Context) error {
 			}
 		}()
 	}
+	// Never expose an SMTP listener before the queue has acquired exclusive
+	// spool ownership and completed its initial readiness check.
 	start("queue", a.Queue.Start)
+	startupCtx, startupCancel := context.WithTimeout(ctx, 30*time.Second)
+	defer startupCancel()
+	poll := time.NewTicker(20*time.Millisecond)
+	defer poll.Stop()
+	var startupErr error
+queueStartup:
+	for !a.Queue.Ready() {
+		select {
+		case err := <-errCh:
+			startupErr = err
+			break queueStartup
+		case <-startupCtx.Done():
+			startupErr = fmt.Errorf("queue unavailable during startup: %w", startupCtx.Err())
+			break queueStartup
+		case <-poll.C:
+		}
+	}
+	if startupErr != nil {
+		cancel()
+		wg.Wait()
+		return startupErr
+	}
 	start("smtp", a.Server.Run)
 	if a.status != nil {
 		start("status", a.serveStatus)

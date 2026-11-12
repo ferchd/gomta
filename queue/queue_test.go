@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"os"
 	"strings"
@@ -297,4 +298,33 @@ func TestAuthorizedAliasMayReceiveFailureReport(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(m.cfg.Dir,recipientDSNID(env.ID,"missing@remote.test")+".json")); !os.IsNotExist(err) {
 		t.Fatalf("forged delegated sender produced DSN: %v",err)
 	}
+}
+
+func TestMissingPayloadIsQuarantinedWithDiagnostics(t *testing.T) {
+	m, err := New(Config{Dir:t.TempDir(), MaxAttempts:2}, testRouter{})
+	if err != nil { t.Fatal(err) }
+	env := &Envelope{ID:"vanished", From:"external@example.test", Recipients:[]Recipient{{Address:"bob@example.test",Status:"pending"}}}
+	if err := atomicWrite(filepath.Join(m.cfg.Dir,env.ID+".json"),mustJSON(env),0o600); err != nil {t.Fatal(err)}
+	m.process(context.Background(),env)
+	for _, ext := range []string{".json",".reason"} {
+		if _, err := os.Stat(filepath.Join(m.cfg.Dir,"corrupt",env.ID+ext)); err != nil {t.Fatal(err)}
+	}
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir,env.ID+".json")); !os.IsNotExist(err) {t.Fatalf("unrecoverable envelope still active: %v",err)}
+	raw,err:=os.ReadFile(filepath.Join(m.cfg.Dir,"corrupt",env.ID+".json"))
+	if err!=nil {t.Fatal(err)}
+	var archived Envelope
+	if err:=json.Unmarshal(raw,&archived);err!=nil {t.Fatal(err)}
+	if archived.Recipients[0].Status!="failed" {t.Fatalf("corruption not recorded: %+v",archived)}
+}
+
+func TestMalformedEnvelopeIsPreservedRatherThanRetried(t *testing.T) {
+	m,err:=New(Config{Dir:t.TempDir()},testRouter{})
+	if err!=nil {t.Fatal(err)}
+	bad:=[]byte("{invalid-json")
+	if err:=atomicWrite(filepath.Join(m.cfg.Dir,"corrupt-raw.json"),bad,0o600);err!=nil {t.Fatal(err)}
+	m.scan(context.Background())
+	raw,err:=os.ReadFile(filepath.Join(m.cfg.Dir,"corrupt","corrupt-raw.envelope"))
+	if err!=nil {t.Fatal(err)}
+	if string(raw)!=string(bad) {t.Fatalf("raw bytes changed: %q",raw)}
+	if _,err:=os.Stat(filepath.Join(m.cfg.Dir,"corrupt-raw.json")); !os.IsNotExist(err) {t.Fatalf("bad visible envelope remains: %v",err)}
 }

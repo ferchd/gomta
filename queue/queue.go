@@ -297,6 +297,9 @@ func (m *Manager) scan(ctx context.Context) bool {
 		if err := json.Unmarshal(raw, &env); err != nil {
 			healthy = false
 			m.logger.Error("queue: corrupt envelope", "id", id, "error", err)
+			if qerr := m.quarantineCorruptBytes(id, raw, "invalid envelope JSON: "+err.Error()); qerr != nil {
+				m.logger.Error("queue: preserve corrupt envelope failed", "id", id, "error", qerr)
+			}
 			continue
 		}
 		if err := m.sendFailureReports(&env); err != nil {
@@ -335,6 +338,12 @@ func (m *Manager) process(ctx context.Context, env *Envelope) {
 	msg, err := os.ReadFile(msgPath)
 	if err != nil {
 		m.logger.Error("queue: cannot read message", "id", env.ID, "error", err)
+		if os.IsNotExist(err) {
+			if qerr := m.quarantineMissingPayload(env, err); qerr != nil {
+				m.logger.Error("queue: quarantine missing payload failed", "id", env.ID, "error", qerr)
+			}
+			return
+		}
 		m.failAll(env, delivery.Temp(err))
 		env.NextAttempt = time.Now().Add(m.retryDelay(env.Attempts))
 		_ = atomicWrite(jsonPath, mustJSON(env), 0o600)
@@ -493,6 +502,11 @@ func (m *Manager) finish(env *Envelope, msg []byte) {
 			msg, err = os.ReadFile(msgPath)
 			if err != nil {
 				m.logger.Error("queue: missing failed message payload", "id", env.ID, "error", err)
+				if os.IsNotExist(err) {
+					if qerr := m.quarantineMissingPayload(env, err); qerr != nil {
+						m.logger.Error("queue: quarantine missing archived payload failed", "id", env.ID, "error", qerr)
+					}
+				}
 				return
 			}
 		}
@@ -904,4 +918,39 @@ func (m *Manager) cleanupSpool(now time.Time) {
 			m.logger.Warn("spool cleanup: remove expired archive artifact failed", "name", name, "error", err)
 		}
 	}
+}
+
+
+// quarantineMissingPayload removes an unrecoverable visible envelope only
+// after its complete metadata and a diagnostic have been durably preserved.
+// A transient permission or I/O error is NOT treated as a missing payload.
+func (m *Manager) quarantineMissingPayload(env *Envelope, cause error) error {
+	reason := "original message payload is missing: " + cause.Error()
+	for i := range env.Recipients {
+		if env.Recipients[i].Status == "pending" || env.Recipients[i].Status == "" {
+			env.Recipients[i].Status = "failed"
+			env.Recipients[i].LastError = reason
+			env.Recipients[i].Updated = time.Now()
+		}
+	}
+	badDir := filepath.Join(m.cfg.Dir, "corrupt")
+	if err := os.MkdirAll(badDir, 0o700); err != nil { return err }
+	if err := atomicWrite(filepath.Join(badDir, env.ID+".reason"), []byte(reason+"\n"), 0o600); err != nil { return err }
+	if err := atomicWrite(filepath.Join(badDir, env.ID+".json"), mustJSON(env), 0o600); err != nil { return err }
+	if err := m.sendFailureReports(env); err != nil { return err }
+	if err := os.Remove(filepath.Join(m.cfg.Dir, env.ID+".json")); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	m.logger.Error("queue: quarantined unrecoverable message", "id", env.ID, "diagnostic", reason)
+	return nil
+}
+
+// quarantineCorruptBytes retains malformed envelope bytes for manual repair.
+// This path cannot safely infer sender identity or generate a DSN.
+func (m *Manager) quarantineCorruptBytes(id string, raw []byte, reason string) error {
+	badDir := filepath.Join(m.cfg.Dir, "corrupt")
+	if err := os.MkdirAll(badDir, 0o700); err != nil { return err }
+	if err := atomicWrite(filepath.Join(badDir,id+".reason"), []byte(reason+"\n"), 0o600); err != nil { return err }
+	if err := atomicWrite(filepath.Join(badDir,id+".envelope"), raw, 0o600); err != nil { return err }
+	return os.Remove(filepath.Join(m.cfg.Dir, id+".json"))
 }
