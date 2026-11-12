@@ -996,6 +996,18 @@ func (m *Manager) quarantineCorruptBytes(id string, raw []byte, reason string) e
 	if err := atomicWrite(filepath.Join(badDir, id+".envelope"), raw, 0o600); err != nil {
 		return err
 	}
+	// A malformed envelope may still refer to an intact payload. Preserve
+	// that content before removing the visibility marker: the orphan cleaner
+	// would otherwise discard the original .eml after its grace interval.
+	msgPath := filepath.Join(m.cfg.Dir, id+".eml")
+	msg, err := os.ReadFile(msgPath)
+	if err == nil {
+		if err := atomicWrite(filepath.Join(badDir, id+".eml"), msg, 0o600); err != nil {
+			return err
+		}
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("preserve payload of corrupt envelope: %w", err)
+	}
 	return os.Remove(filepath.Join(m.cfg.Dir, id+".json"))
 }
 
