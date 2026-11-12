@@ -36,15 +36,26 @@ func NewMaildir(bc plugin.BuildContext, opts plugin.Options) (Backend, error) {
 		hostname:        opts.String("hostname", ""),
 		maxMailboxBytes: int64(opts.Int("max_mailbox_bytes", 512*1024*1024)),
 		maxDomainBytes:  int64(opts.Int("max_domain_bytes", 5*1024*1024*1024)),
+		quotas:          make(map[string]*maildirQuota),
 	}, nil
 }
 
 type maildirBackend struct {
 	root            string
 	hostname        string
-	mu              sync.Mutex
+	mu              sync.Mutex // protects quotas, not all deliveries
+	quotas          map[string]*maildirQuota
 	maxMailboxBytes int64
 	maxDomainBytes  int64
+}
+
+// maildirQuota is scoped to one domain, so different domains can deliver
+// concurrently without rescanning the entire tree on every message.
+type maildirQuota struct {
+	mu sync.Mutex
+	used int64
+	mailboxes map[string]int64
+	lastScan time.Time
 }
 
 func (b *maildirBackend) Name() string { return "maildir" }
@@ -63,11 +74,11 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 	if domain == "" || local == "" {
 		return Perm(fmt.Errorf("invalid recipient %q", rcpt))
 	}
-	box := filepath.Join(b.root, safeComponent(domain), safeComponent(local))
-	// Serialize quota checks and writes for this backend. This is a
-	// single-instance safeguard, not a shared-filesystem distributed quota.
-	b.mu.Lock()
-	defer b.mu.Unlock()
+	domainPath := filepath.Join(b.root, safeComponent(domain))
+	box := filepath.Join(domainPath, safeComponent(local))
+	quota := b.quotaFor(domain)
+	quota.mu.Lock()
+	defer quota.mu.Unlock()
 	for _, sub := range []string{"tmp", "new", "cur"} {
 		if err := os.MkdirAll(filepath.Join(box, sub), 0o700); err != nil {
 			return Temp(fmt.Errorf("create maildir: %w", err))
@@ -84,21 +95,24 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 	if len(data) == 0 || data[len(data)-1] != '\n' {
 		data = append(data, '\n')
 	}
-	if b.maxMailboxBytes > 0 {
-		current, err := maildirUsage(box)
-		if err != nil {
-			return Temp(fmt.Errorf("inspect mailbox quota: %w", err))
+	if b.maxMailboxBytes > 0 || b.maxDomainBytes > 0 {
+		// Reconcile periodically for external mailbox deletions, not per delivery.
+		if quota.lastScan.IsZero() || time.Since(quota.lastScan) >= 5*time.Minute {
+			if err := quota.reconcile(domainPath); err != nil {
+				return Temp(fmt.Errorf("inspect Maildir usage: %w", err))
+			}
 		}
-		if current+int64(len(data)) > b.maxMailboxBytes {
+		if (b.maxMailboxBytes > 0 && quota.mailboxes[safeComponent(local)]+int64(len(data)) > b.maxMailboxBytes) ||
+			(b.maxDomainBytes > 0 && quota.used+int64(len(data)) > b.maxDomainBytes) {
+			// Recheck on refusal: a mailbox reader may have deleted older mail.
+			if err := quota.reconcile(domainPath); err != nil {
+				return Temp(fmt.Errorf("reconcile Maildir usage: %w", err))
+			}
+		}
+		if b.maxMailboxBytes > 0 && quota.mailboxes[safeComponent(local)]+int64(len(data)) > b.maxMailboxBytes {
 			return Temp(fmt.Errorf("recipient mailbox quota exceeded"))
 		}
-	}
-	if b.maxDomainBytes > 0 {
-		current, err := maildirUsage(filepath.Join(b.root, safeComponent(domain)))
-		if err != nil {
-			return Temp(fmt.Errorf("inspect domain quota: %w", err))
-		}
-		if current+int64(len(data)) > b.maxDomainBytes {
+		if b.maxDomainBytes > 0 && quota.used+int64(len(data)) > b.maxDomainBytes {
 			return Temp(fmt.Errorf("recipient domain quota exceeded"))
 		}
 	}
@@ -129,6 +143,9 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 	}
 	// fsync the new/ directory: syncing the file alone does not persist the
 	// directory entry across a power failure on many POSIX filesystems.
+	// A renamed message already occupies capacity even if directory sync fails.
+	quota.used += int64(len(data))
+	quota.mailboxes[safeComponent(local)] += int64(len(data))
 	if runtime.GOOS != "windows" {
 		if err := syncMaildir(filepath.Dir(dst)); err != nil {
 			return Temp(fmt.Errorf("sync maildir directory: %w", err))
@@ -206,4 +223,60 @@ func maildirUsage(root string) (int64, error) {
 		return 0, nil
 	}
 	return size, err
+}
+
+// quotaFor takes only a short global lock to retrieve a domain-scoped quota.
+func (b *maildirBackend) quotaFor(domain string) *maildirQuota {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.quotas == nil {
+		b.quotas = make(map[string]*maildirQuota)
+	}
+	key := safeComponent(domain)
+	q := b.quotas[key]
+	if q == nil {
+		q = &maildirQuota{mailboxes: make(map[string]int64)}
+		b.quotas[key] = q
+	}
+	return q
+}
+
+// reconcile scans a domain once at startup and periodically thereafter.
+// All calls occur while the domain's mutex is held.
+func (q *maildirQuota) reconcile(domainPath string) error {
+	mailboxes := make(map[string]int64)
+	var used int64
+	err := filepath.WalkDir(domainPath, func(path string, entry os.DirEntry, err error) error {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() || !entry.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(domainPath, path)
+		if err != nil {
+			return err
+		}
+		parts := strings.Split(rel, string(filepath.Separator))
+		if len(parts) != 3 || (parts[1] != "new" && parts[1] != "cur" && parts[1] != "tmp") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		used += info.Size()
+		mailboxes[parts[0]] += info.Size()
+		return nil
+	})
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	q.used = used
+	q.mailboxes = mailboxes
+	q.lastScan = time.Now()
+	return nil
 }

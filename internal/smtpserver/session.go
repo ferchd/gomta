@@ -149,12 +149,15 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 	}
 
 	verify := func(username, password string) error {
+		if !s.srv.authGuard.begin(s.tx.RemoteAddr, username) {
+			return smtp.ErrAuthFailed
+		}
 		resolvedUser := s.authenticate(username, password)
+		s.srv.authGuard.complete(s.tx.RemoteAddr, username, resolvedUser != "")
 		if resolvedUser == "" {
 			s.mu.Lock()
 			s.authFailures++
 			s.mu.Unlock()
-			s.srv.authGuard.failure(s.tx.RemoteAddr)
 			s.srv.logger.Warn("authentication failed", "remote", s.tx.RemoteAddr, "user", username)
 			return smtp.ErrAuthFailed
 		}
@@ -163,7 +166,6 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 		s.authUser = resolvedUser
 		s.tx.AuthUser = s.authUser
 		s.mu.Unlock()
-		s.srv.authGuard.success(s.tx.RemoteAddr)
 		s.srv.logger.Info("authentication succeeded", "remote", s.tx.RemoteAddr, "user", s.authUser)
 		return nil
 	}
