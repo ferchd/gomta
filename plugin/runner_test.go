@@ -178,3 +178,28 @@ func TestRunnerPanicRespectsFailClosed(t *testing.T) {
 		t.Fatalf("panic outcome not preserved: %+v", result.Outcomes)
 	}
 }
+
+func TestOrderedPluginTimeoutIsBoundedAndIsolated(t *testing.T) {
+	finished := make(chan struct{})
+	slow := &testPlugin{name: "ordered-timeout", hooks: []Hook{HookQueue}, ordered: true, run: func(_ context.Context, _ Hook, tx *Tx) (Outcome, error) {
+		time.Sleep(100 * time.Millisecond)
+		tx.SetMeta("late-write", true)
+		close(finished)
+		return OK(), nil
+	}}
+	r := newTestRunner(t, map[Hook][]entry{HookQueue: {testEntry(slow, 0, 0)}})
+	r.timeout = 15 * time.Millisecond
+	tx := NewTx()
+	start := time.Now()
+	res := r.Run(context.Background(), HookQueue, tx)
+	if !res.TimedOut || res.Decision.Action != ActionTempFail {
+		t.Fatalf("ordered timeout not enforced: %+v", res)
+	}
+	if time.Since(start) > 80*time.Millisecond {
+		t.Fatal("ordered callback blocked beyond deadline")
+	}
+	<-finished
+	if _, ok := tx.Meta("late-write"); ok {
+		t.Fatal("late plugin modified original transaction")
+	}
+}
