@@ -61,6 +61,7 @@ type Config struct {
 	RelayNets   []string   `yaml:"relay_networks"`
 	Queue       Queue      `yaml:"queue"`
 	StatusAddr  string     `yaml:"status_addr"`
+	AuthorizedSenders map[string][]string `yaml:"authorized_senders"`
 
 	// BaseDir is the directory containing the config file. Relative paths are
 	// resolved against it and exposed to plugins for their own path options.
@@ -388,6 +389,16 @@ func (c *Config) Validate() error {
 		}
 		if l.AllowInsecureAuth && !strings.HasPrefix(l.Address, "127.") && !strings.HasPrefix(l.Address, "localhost") && !strings.HasPrefix(l.Address, "[::1]") {
 			errs = append(errs, fmt.Errorf("%s: allow_insecure_auth is only allowed on a loopback address", prefix))
+		}
+	}
+	for account, aliases := range c.AuthorizedSenders {
+		if !plugin.ValidAddress(account, false) {
+			errs = append(errs, fmt.Errorf("authorized_senders: invalid account %q", account))
+		}
+		for _, alias := range aliases {
+			if !plugin.ValidAddress(alias, false) {
+				errs = append(errs, fmt.Errorf("authorized_senders: invalid address %q", alias))
+			}
 		}
 	}
 	for _, n := range c.RelayNets {

@@ -236,7 +236,7 @@ func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 	if !plugin.ValidAddress(from, true) {
 		return smtpError(501, 5, 1, 7, "Invalid sender address")
 	}
-	if s.isAuthed() && !strings.EqualFold(from, s.authUser) {
+	if s.isAuthed() && !s.senderAuthorized(from) {
 		return smtpError(553, 5, 7, 1, "Sender is not authorized for this account")
 	}
 	s.tx.MailFrom = from
@@ -330,7 +330,7 @@ func (s *session) Data(r io.Reader) error {
 			return smtpError(553, 5, 7, 1, "Exactly one From header is required")
 		}
 		addrs, parseErr := mail.ParseAddressList(fromValues[0])
-		if parseErr != nil || len(addrs) != 1 || !strings.EqualFold(addrs[0].Address, s.authUser) {
+		if parseErr != nil || len(addrs) != 1 || !s.senderAuthorized(addrs[0].Address) {
 			return smtpError(553, 5, 7, 1, "From header is not authorized for this account")
 		}
 	}
@@ -542,3 +542,17 @@ func smtpError(code, c1, c2, c3 int, msg string) error {
 
 var _ smtp.AuthSession = (*session)(nil)
 var _ smtp.Session = (*session)(nil)
+
+ 
+// senderAuthorized checks the authenticated primary identity and explicit,
+// per-account delegated aliases. No domain wildcards or implicit delegation.
+func (s *session) senderAuthorized(address string) bool {
+	if strings.EqualFold(address, s.authUser) { return true }
+	for account, aliases := range s.srv.cfg.AuthorizedSenders {
+		if !strings.EqualFold(account, s.authUser) { continue }
+		for _, alias := range aliases {
+			if strings.EqualFold(alias, address) { return true }
+		}
+	}
+	return false
+}

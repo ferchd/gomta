@@ -203,3 +203,33 @@ func TestOrderedPluginTimeoutIsBoundedAndIsolated(t *testing.T) {
 		t.Fatal("late plugin modified original transaction")
 	}
 }
+
+func TestOrderedPluginIndividualTimeout(t *testing.T) {
+	done := make(chan struct{})
+	slow := &testPlugin{name: "ordered-slow", hooks: []Hook{HookQueue}, ordered: true, run: func(_ context.Context, _ Hook, tx *Tx) (Outcome, error) {
+		time.Sleep(150 * time.Millisecond)
+		tx.SetMeta("delayed", true)
+		close(done)
+		return OK(), nil
+	}}
+	r := newTestRunner(t, map[Hook][]entry{HookQueue: {testEntry(slow, 0, 0)}})
+	r.hooks[HookQueue][0].timeout = 20*time.Millisecond
+	r.timeout = time.Second
+	tx := NewTx()
+	started := time.Now()
+	out := r.Run(context.Background(), HookQueue, tx)
+	if !out.TimedOut || out.Decision.Action != ActionTempFail { t.Fatalf("timeout did not fail closed: %+v", out) }
+	if time.Since(started) > 100*time.Millisecond { t.Fatal("individual plugin timeout ignored") }
+	<-done
+	if _, ok := tx.Meta("delayed"); ok { t.Fatal("late write reached the original transaction") }
+}
+
+func TestSnapshotMetadataDoesNotShareNestedMap(t *testing.T) {
+	src := NewTx()
+	src.SetMeta("settings", map[string]any{"nested": map[string]any{"key":"original"}})
+	clone := snapshotTx(src)
+	value, _ := clone.Meta("settings")
+	value.(map[string]any)["nested"].(map[string]any)["key"] = "modified"
+	original, _ := src.Meta("settings")
+	if original.(map[string]any)["nested"].(map[string]any)["key"] != "original" { t.Fatal("plugin snapshot shared mutable metadata") }
+}
