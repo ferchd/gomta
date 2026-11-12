@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"reflect"
-	"sort"
 	"net"
 	"net/textproto"
+	"reflect"
+	"sort"
 	"strings"
 	"time"
 )
@@ -41,7 +41,7 @@ type PluginResult struct {
 
 	// Direct transaction changes are staged and only committed for completed
 	// plugins. A plugin that outlives its deadline cannot mutate the caller.
-	meta map[string]any
+	meta    map[string]any
 	headers []Header
 
 	// index is the plugin's position in the configured priority order.
