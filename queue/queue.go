@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -141,7 +142,7 @@ func NewID() string {
 	return time.Now().UTC().Format("20060102T150405") + "-" + hex.EncodeToString(buf)
 }
 
-// Enqueue atomically writes the envelope and message to the spool.
+// Enqueue writes the payload before publishing its envelope as the visibility marker.
 func (m *Manager) Enqueue(ctx context.Context, env *Envelope, msg []byte) error {
 	select {
 	case <-ctx.Done():
@@ -170,12 +171,12 @@ func (m *Manager) Enqueue(ctx context.Context, env *Envelope, msg []byte) error 
 		}
 	}
 	jsonPath, msgPath := m.paths(env.ID)
-	if err := atomicWrite(jsonPath, mustJSON(env), 0o600); err != nil {
-		return fmt.Errorf("queue: write envelope: %w", err)
-	}
 	if err := atomicWrite(msgPath, msg, 0o600); err != nil {
-		_ = os.Remove(jsonPath)
 		return fmt.Errorf("queue: write message: %w", err)
+	}
+	if err := atomicWrite(jsonPath, mustJSON(env), 0o600); err != nil {
+		// The orphan .eml is not visible to workers without its envelope.
+		return fmt.Errorf("queue: write envelope: %w", err)
 	}
 	m.logger.Info("message queued", "queue_id", env.ID, "from", env.From, "recipients", len(env.Recipients))
 	select {
@@ -347,6 +348,12 @@ func (m *Manager) process(ctx context.Context, env *Envelope) {
 
 	pending := env.Pending()
 	if len(pending) == 0 {
+		// Persist final recipient states before archiving; a failed archive
+		// can then be retried without redelivering successful recipients.
+		if err := atomicWrite(jsonPath, mustJSON(env), 0o600); err != nil {
+			m.logger.Error("queue: persist final outcomes failed", "id", env.ID, "error", err)
+			return
+		}
 		m.finish(env, msg)
 		return
 	}
@@ -405,25 +412,46 @@ func (m *Manager) failAll(env *Envelope, err error) {
 }
 
 func (m *Manager) finish(env *Envelope, msg []byte) {
+	if len(env.Pending()) != 0 {
+		return
+	}
 	jsonPath, msgPath := m.paths(env.ID)
-	pending := env.Pending()
 	failed := env.Failed()
-	if len(pending) == 0 && len(failed) > 0 {
+	if len(failed) > 0 {
 		if msg == nil {
-			msg, _ = os.ReadFile(msgPath)
+			var err error
+			msg, err = os.ReadFile(msgPath)
+			if err != nil {
+				m.logger.Error("queue: missing failed message payload", "id", env.ID, "error", err)
+				return
+			}
 		}
 		failedDir := filepath.Join(m.cfg.Dir, "failed")
-		if err := os.MkdirAll(failedDir, 0o700); err == nil {
-			env.NextAttempt = time.Time{}
-			_ = atomicWrite(filepath.Join(failedDir, env.ID+".json"), mustJSON(env), 0o600)
-			if msg != nil {
-				_ = atomicWrite(filepath.Join(failedDir, env.ID+".eml"), msg, 0o600)
-			}
-			m.logger.Warn("message moved to failed queue", "queue_id", env.ID, "failed_recipients", len(failed))
+		if err := os.MkdirAll(failedDir, 0o700); err != nil {
+			m.logger.Error("queue: create failed directory", "id", env.ID, "error", err)
+			return
 		}
+		// Publish the archived envelope only after its payload is durable.
+		if err := atomicWrite(filepath.Join(failedDir, env.ID+".eml"), msg, 0o600); err != nil {
+			m.logger.Error("queue: archive failed payload", "id", env.ID, "error", err)
+			return
+		}
+		archived := *env
+		archived.NextAttempt = time.Time{}
+		if err := atomicWrite(filepath.Join(failedDir, env.ID+".json"), mustJSON(&archived), 0o600); err != nil {
+			m.logger.Error("queue: archive failed envelope", "id", env.ID, "error", err)
+			return
+		}
+		m.logger.Warn("message moved to failed queue", "queue_id", env.ID, "failed_recipients", len(failed))
 	}
-	_ = os.Remove(jsonPath)
-	_ = os.Remove(msgPath)
+	// Delete the visibility marker first, so an orphaned payload is inert.
+	if err := os.Remove(jsonPath); err != nil && !os.IsNotExist(err) {
+		m.logger.Error("queue: remove completed envelope", "id", env.ID, "error", err)
+		return
+	}
+	if err := os.Remove(msgPath); err != nil && !os.IsNotExist(err) {
+		m.logger.Warn("queue: remove completed payload", "id", env.ID, "error", err)
+	}
 }
 
 // SaveQuarantine writes a message and envelope to dir/quarantine for later
@@ -507,9 +535,17 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		// Windows cannot atomically replace an existing file.
-		_ = os.Remove(path)
-		if err := os.Rename(tmpName, path); err != nil {
+		// Never discard the old copy when replacement fails.
+		return err
+	}
+	if runtime.GOOS != "windows" {
+		d, err := os.Open(dir)
+		if err != nil {
+			return err
+		}
+		err = d.Sync()
+		_ = d.Close()
+		if err != nil {
 			return err
 		}
 	}
