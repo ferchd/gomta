@@ -709,7 +709,9 @@ func (m *Manager) sendRecipientFailureReport(env *Envelope, failed Recipient) er
 // spoolWritable probes the same directory where envelope transactions commit.
 func (m *Manager) spoolWritable() bool {
 	f, err := os.CreateTemp(m.cfg.Dir, ".readiness-*")
-	if err != nil { return false }
+	if err != nil {
+		return false
+	}
 	name := f.Name()
 	defer os.Remove(name)
 	if _, err := f.Write([]byte("durability-check")); err != nil {
@@ -720,14 +722,22 @@ func (m *Manager) spoolWritable() bool {
 		_ = f.Close()
 		return false
 	}
-	if err := f.Close(); err != nil { return false }
-	if err := os.Remove(name); err != nil { return false }
+	if err := f.Close(); err != nil {
+		return false
+	}
+	if err := os.Remove(name); err != nil {
+		return false
+	}
 	if runtime.GOOS != "windows" {
 		d, err := os.Open(m.cfg.Dir)
-		if err != nil { return false }
+		if err != nil {
+			return false
+		}
 		err = d.Sync()
 		_ = d.Close()
-		if err != nil { return false }
+		if err != nil {
+			return false
+		}
 	}
 	return true
 }
