@@ -2,7 +2,10 @@ package boundedio
 
 import (
 	"bytes"
+	"context"
 	"errors"
+	"github.com/ferchd/gomta/plugin"
+	"time"
 	"testing"
 )
 
@@ -26,4 +29,21 @@ func TestTruncateNeverAccumulatesPastLimit(t *testing.T) {
 	if len(w.String()) != 16 {
 		t.Fatal("stderr was not capped")
 	}
+}
+
+func TestConcurrentCapturesShareBudget(t *testing.T) {
+	budget:=plugin.NewByteBudget(10)
+	first:=&Capture{Max:10,Budget:budget}
+	if _,err:=first.Write([]byte("12345678"));err!=nil {t.Fatal(err)}
+	second:=&Capture{Max:10,Budget:budget}
+	ctx,cancel:=context.WithTimeout(context.Background(),20*time.Millisecond)
+	defer cancel()
+	second.Context=ctx
+	if _,err:=second.Write([]byte("12345"));!errors.Is(err,context.DeadlineExceeded) {
+		t.Fatalf("aggregate budget not enforced: %v",err)
+	}
+	first.Close()
+	second.Context=context.Background()
+	if _,err:=second.Write([]byte("12345"));err!=nil {t.Fatal(err)}
+	second.Close()
 }

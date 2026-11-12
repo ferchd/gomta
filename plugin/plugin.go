@@ -303,6 +303,7 @@ type Factory func(bc BuildContext, opts Options) (Plugin, error)
 type BuildContext struct {
 	BaseDir string
 	Logger  *slog.Logger
+	Budget  *ByteBudget // shared snapshot and external-filter output budget
 }
 
 // Path resolves a possibly relative path against the configuration directory.

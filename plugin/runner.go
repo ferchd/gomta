@@ -9,7 +9,6 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -88,10 +87,7 @@ type Runner struct {
 	workers   int
 	timeout   time.Duration
 	sem       chan struct{}
-	snapMu    sync.Mutex
-	snapUsed  int64
-	snapLimit int64
-	snapWake  chan struct{}
+	budget    *ByteBudget
 	hooks     map[Hook][]entry
 }
 
@@ -113,11 +109,10 @@ func NewRunner(defs []Definition, cfg RunnerConfig) (*Runner, error) {
 		workers:   cfg.Workers,
 		timeout:   cfg.Timeout,
 		sem:       make(chan struct{}, cfg.Workers),
-		snapLimit: cfg.MaxSnapshotBytes,
-		snapWake:  make(chan struct{}),
+		budget:    NewByteBudget(cfg.MaxSnapshotBytes),
 		hooks:     make(map[Hook][]entry),
 	}
-	bc := BuildContext{BaseDir: cfg.BaseDir, Logger: logger}
+	bc := BuildContext{BaseDir: cfg.BaseDir, Logger: logger, Budget: r.budget}
 
 	for i, def := range defs {
 		if strings.TrimSpace(def.Name) == "" {
@@ -505,38 +500,16 @@ func (r *Runner) Timeout() time.Duration { return r.timeout }
 // reserveSnapshot bounds private DATA copies independently from SMTP DATA
 // allocations. Zero means unlimited for externally constructed test runners.
 func (r *Runner) reserveSnapshot(ctx context.Context, size int64) error {
-	if size == 0 || r.snapLimit <= 0 {
+	if r.budget == nil {
 		return nil
 	}
-	if size > r.snapLimit {
-		return fmt.Errorf("plugin snapshot exceeds memory budget")
-	}
-	for {
-		r.snapMu.Lock()
-		if r.snapUsed+size <= r.snapLimit {
-			r.snapUsed += size
-			r.snapMu.Unlock()
-			return nil
-		}
-		wake := r.snapWake
-		r.snapMu.Unlock()
-		select {
-		case <-wake:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
+	return r.budget.Acquire(ctx, size)
 }
 
 func (r *Runner) releaseSnapshot(size int64) {
-	if size == 0 || r.snapLimit <= 0 {
-		return
+	if r.budget != nil {
+		r.budget.Release(size)
 	}
-	r.snapMu.Lock()
-	r.snapUsed -= size
-	close(r.snapWake)
-	r.snapWake = make(chan struct{})
-	r.snapMu.Unlock()
 }
 
 // cloneMetadata detaches commonly used JSON-like metadata containers.
