@@ -2,6 +2,7 @@ package delivery
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -100,17 +101,30 @@ func (b *lmtpBackend) Deliver(ctx context.Context, m *Message) map[string]error 
 		}
 		return results
 	}
-	_, err = w.CloseWithLMTPResponse()
-	if err != nil {
-		e := classify(err)
-		for _, rcpt := range accepted {
-			results[rcpt] = e
-		}
-		return results
-	}
-	for _, rcpt := range accepted {
-		results[rcpt] = nil
-	}
+	responses, closeErr := w.CloseWithLMTPResponse()
+	mergeLMTPResults(results, accepted, responses, closeErr)
 	_ = client.Quit()
 	return results
+}
+
+ 
+// mergeLMTPResults preserves per-recipient successes even if other RCPTs fail.
+func mergeLMTPResults(results map[string]error, accepted []string, responses map[string]*smtp.DataResponse, closeErr error) {
+	var recipientErrors smtp.LMTPDataError
+	_ = errors.As(closeErr, &recipientErrors)
+	for _, rcpt := range accepted {
+		if _, ok := responses[rcpt]; ok {
+			results[rcpt] = nil
+			continue
+		}
+		if smtpErr, ok := recipientErrors[rcpt]; ok && smtpErr != nil {
+			results[rcpt] = classify(smtpErr)
+			continue
+		}
+		if closeErr != nil {
+			results[rcpt] = Temp(closeErr)
+		} else {
+			results[rcpt] = Temp(fmt.Errorf("LMTP server returned no status for %s", rcpt))
+		}
+	}
 }

@@ -77,6 +77,7 @@ type Runner struct {
 	logger  *slog.Logger
 	workers int
 	timeout time.Duration
+	sem     chan struct{}
 	hooks   map[Hook][]entry
 }
 
@@ -97,6 +98,7 @@ func NewRunner(defs []Definition, cfg RunnerConfig) (*Runner, error) {
 		logger:  logger,
 		workers: cfg.Workers,
 		timeout: cfg.Timeout,
+		sem:     make(chan struct{}, cfg.Workers),
 		hooks:   make(map[Hook][]entry),
 	}
 	bc := BuildContext{BaseDir: cfg.BaseDir, Logger: logger}
@@ -208,11 +210,10 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 
 	// Phase 1: run independent plugins concurrently.
 	if len(concurrent) > 0 {
-		sem := make(chan struct{}, r.workers)
 		results := make(chan PluginResult, len(concurrent))
 		for _, ie := range concurrent {
 			go func(ie indexedEntry) {
-				pr := r.runOne(runCtx, sem, ie, hook, tx)
+				pr := r.runOne(runCtx, ie, hook, tx)
 				pr.index = ie.index
 				results <- pr
 			}(ie)
@@ -249,7 +250,7 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 			res.TimedOut = true
 			break
 		}
-		pr := r.runOne(runCtx, nil, ie, hook, tx)
+		pr := r.runOne(runCtx, ie, hook, tx)
 		pr.index = ie.index
 		res.Outcomes = append(res.Outcomes, pr)
 		r.applyOutcome(tx, &pr, true)
@@ -296,20 +297,19 @@ type indexedEntry struct {
 }
 
 // runOne executes a single plugin with panic recovery and timeout handling.
-func (r *Runner) runOne(ctx context.Context, sem chan struct{}, ie indexedEntry, hook Hook, tx *Tx) PluginResult {
-	if sem != nil {
+func (r *Runner) runOne(ctx context.Context, ie indexedEntry, hook Hook, tx *Tx) (pr PluginResult) {
+	pr = PluginResult{Name: ie.plugin.Name(), Hook: hook, index: ie.index}
+	if r.sem != nil {
 		select {
-		case sem <- struct{}{}:
-			defer func() { <-sem }()
+		case r.sem <- struct{}{}:
+			defer func() { <-r.sem }()
 		case <-ctx.Done():
-			return PluginResult{Name: ie.plugin.Name(), Hook: hook, Err: ctx.Err()}
+			pr.Err = ctx.Err()
+			return
 		}
 	}
-
 	pluginCtx, pluginCancel := context.WithTimeout(ctx, ie.timeout)
 	defer pluginCancel()
-
-	pr := PluginResult{Name: ie.plugin.Name(), Hook: hook}
 	started := time.Now()
 	defer func() {
 		if rec := recover(); rec != nil {
@@ -318,8 +318,7 @@ func (r *Runner) runOne(ctx context.Context, sem chan struct{}, ie indexedEntry,
 		pr.Duration = time.Since(started)
 	}()
 	pr.Outcome, pr.Err = ie.plugin.Run(pluginCtx, hook, tx)
-	pr.index = ie.index
-	return pr
+	return
 }
 
 // applyOutcome merges metadata, tags, headers, and body changes into tx. When
