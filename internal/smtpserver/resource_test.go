@@ -39,3 +39,20 @@ func TestAuthFailuresPersistAcrossConnections(t *testing.T) {
 		t.Fatal("other IP blocked")
 	}
 }
+
+func TestAuthGuardReservesConcurrentAttemptsAndBoundsKeys(t *testing.T) {
+	g := newAuthFailureGuard(1)
+	for i := 0; i < g.max; i++ {
+		if !g.begin("127.0.0.1:1000", "alice@example.test") {
+			t.Fatalf("unexpected rejection at attempt %d", i)
+		}
+	}
+	if g.begin("127.0.0.1:9999", "alice@example.test") {
+		t.Fatal("parallel connections bypassed the in-flight IP budget")
+	}
+	g2 := newAuthFailureGuard(1)
+	g2.capacity = 2
+	if !g2.begin("127.0.0.1:1", "first@example.test") { t.Fatal("first attempt failed") }
+	if g2.begin("127.0.0.2:2", "second@example.test") { t.Fatal("guard exceeded key capacity") }
+	if len(g2.attempts) > g2.capacity { t.Fatal("guard map grew past capacity") }
+}
