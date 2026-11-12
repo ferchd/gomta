@@ -107,7 +107,7 @@ func LoadWithOptions(configPath string, opts LoadOptions) (*App, error) {
 		MaxAge:          cfg.Queue.MaxAge.Std(),
 		OrphanGrace:     cfg.Queue.OrphanGrace.Std(),
 		FailedRetention: cfg.Queue.FailedRetention.Std(),
-		QuarantineDir: filepath.Join(cfg.DataDir, "quarantine"),
+		QuarantineDir:   filepath.Join(cfg.DataDir, "quarantine"),
 		SendDSN:         cfg.Queue.SendDSN,
 		DSNInbound:      cfg.Queue.DSNInbound,
 		Plugins:         runner,
@@ -195,7 +195,7 @@ func (a *App) Run(ctx context.Context) error {
 	start("queue", a.Queue.Start)
 	startupCtx, startupCancel := context.WithTimeout(ctx, 30*time.Second)
 	defer startupCancel()
-	poll := time.NewTicker(20*time.Millisecond)
+	poll := time.NewTicker(20 * time.Millisecond)
 	defer poll.Stop()
 	var startupErr error
 queueStartup:

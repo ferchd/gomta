@@ -422,17 +422,17 @@ func (s *session) quarantineAndAccept(reason string) error {
 
 func (s *session) envelope() *queue.Envelope {
 	env := &queue.Envelope{
-		ID:          s.tx.ID,
-		From:        s.tx.MailFrom,
-		Mode:        string(s.tx.Mode),
-		Helo:        s.tx.Helo,
-		RemoteIP:    "",
-		AuthUser:    s.tx.AuthUser,
+		ID:               s.tx.ID,
+		From:             s.tx.MailFrom,
+		Mode:             string(s.tx.Mode),
+		Helo:             s.tx.Helo,
+		RemoteIP:         "",
+		AuthUser:         s.tx.AuthUser,
 		SenderAuthorized: s.tx.AuthUser != "" && s.senderAuthorized(s.tx.MailFrom),
-		ServerName:  s.tx.ServerName,
-		Created:     time.Now(),
-		NextAttempt: time.Now(),
-		Meta:        make(map[string]string),
+		ServerName:       s.tx.ServerName,
+		Created:          time.Now(),
+		NextAttempt:      time.Now(),
+		Meta:             make(map[string]string),
 	}
 	if s.tx.RemoteIP != nil {
 		env.RemoteIP = s.tx.RemoteIP.String()

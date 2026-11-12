@@ -35,20 +35,20 @@ type Recipient struct {
 
 // Envelope is the persistent SMTP envelope.
 type Envelope struct {
-	ID          string            `json:"id"`
-	From        string            `json:"from"`
-	Recipients  []Recipient       `json:"recipients"`
-	Mode        string            `json:"mode"`
-	Helo        string            `json:"helo,omitempty"`
-	RemoteIP    string            `json:"remote_ip,omitempty"`
-	AuthUser    string            `json:"auth_user,omitempty"`
-	SenderAuthorized bool        `json:"sender_authorized,omitempty"`
-	ServerName  string            `json:"server_name,omitempty"`
-	Meta        map[string]string `json:"meta,omitempty"`
-	Created     time.Time         `json:"created"`
-	Updated     time.Time         `json:"updated"`
-	NextAttempt time.Time         `json:"next_attempt"`
-	Attempts    int               `json:"attempts"`
+	ID               string            `json:"id"`
+	From             string            `json:"from"`
+	Recipients       []Recipient       `json:"recipients"`
+	Mode             string            `json:"mode"`
+	Helo             string            `json:"helo,omitempty"`
+	RemoteIP         string            `json:"remote_ip,omitempty"`
+	AuthUser         string            `json:"auth_user,omitempty"`
+	SenderAuthorized bool              `json:"sender_authorized,omitempty"`
+	ServerName       string            `json:"server_name,omitempty"`
+	Meta             map[string]string `json:"meta,omitempty"`
+	Created          time.Time         `json:"created"`
+	Updated          time.Time         `json:"updated"`
+	NextAttempt      time.Time         `json:"next_attempt"`
+	Attempts         int               `json:"attempts"`
 }
 
 // Pending returns recipients still awaiting delivery.
@@ -228,7 +228,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	defer maintenance.Stop()
 	// Expensive durability probes run periodically, not on every 2-second
 	// queue scan. A failed probe keeps readiness false until the next probe.
-	probe := time.NewTicker(30*time.Second)
+	probe := time.NewTicker(30 * time.Second)
 	defer probe.Stop()
 	healthy := m.scan(ctx)
 	m.cleanupSpool(time.Now())
@@ -863,7 +863,9 @@ func (m *Manager) cleanupSpool(now time.Time) {
 		filepath.Join(m.cfg.Dir, "corrupt"),
 		m.cfg.QuarantineDir,
 	} {
-		if dir == "" { continue }
+		if dir == "" {
+			continue
+		}
 		m.cleanupTemporaryFiles(dir, cutoff)
 	}
 	if m.cfg.FailedRetention <= 0 {
@@ -949,7 +951,6 @@ func (m *Manager) cleanupSpool(now time.Time) {
 	}
 }
 
-
 // quarantineMissingPayload removes an unrecoverable visible envelope only
 // after its complete metadata and a diagnostic have been durably preserved.
 // A transient permission or I/O error is NOT treated as a missing payload.
@@ -963,10 +964,18 @@ func (m *Manager) quarantineMissingPayload(env *Envelope, cause error) error {
 		}
 	}
 	badDir := filepath.Join(m.cfg.Dir, "corrupt")
-	if err := os.MkdirAll(badDir, 0o700); err != nil { return err }
-	if err := atomicWrite(filepath.Join(badDir, env.ID+".reason"), []byte(reason+"\n"), 0o600); err != nil { return err }
-	if err := atomicWrite(filepath.Join(badDir, env.ID+".json"), mustJSON(env), 0o600); err != nil { return err }
-	if err := m.sendFailureReports(env); err != nil { return err }
+	if err := os.MkdirAll(badDir, 0o700); err != nil {
+		return err
+	}
+	if err := atomicWrite(filepath.Join(badDir, env.ID+".reason"), []byte(reason+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := atomicWrite(filepath.Join(badDir, env.ID+".json"), mustJSON(env), 0o600); err != nil {
+		return err
+	}
+	if err := m.sendFailureReports(env); err != nil {
+		return err
+	}
 	if err := os.Remove(filepath.Join(m.cfg.Dir, env.ID+".json")); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -978,26 +987,37 @@ func (m *Manager) quarantineMissingPayload(env *Envelope, cause error) error {
 // This path cannot safely infer sender identity or generate a DSN.
 func (m *Manager) quarantineCorruptBytes(id string, raw []byte, reason string) error {
 	badDir := filepath.Join(m.cfg.Dir, "corrupt")
-	if err := os.MkdirAll(badDir, 0o700); err != nil { return err }
-	if err := atomicWrite(filepath.Join(badDir,id+".reason"), []byte(reason+"\n"), 0o600); err != nil { return err }
-	if err := atomicWrite(filepath.Join(badDir,id+".envelope"), raw, 0o600); err != nil { return err }
+	if err := os.MkdirAll(badDir, 0o700); err != nil {
+		return err
+	}
+	if err := atomicWrite(filepath.Join(badDir, id+".reason"), []byte(reason+"\n"), 0o600); err != nil {
+		return err
+	}
+	if err := atomicWrite(filepath.Join(badDir, id+".envelope"), raw, 0o600); err != nil {
+		return err
+	}
 	return os.Remove(filepath.Join(m.cfg.Dir, id+".json"))
 }
 
-
 func (m *Manager) cleanupTemporaryFiles(dir string, cutoff time.Time) {
 	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) { return }
+	if os.IsNotExist(err) {
+		return
+	}
 	if err != nil {
 		m.logger.Warn("spool cleanup: cannot inspect temporary directory", "dir", dir, "error", err)
 		return
 	}
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasPrefix(entry.Name(), ".tmp-") { continue }
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), ".tmp-") {
+			continue
+		}
 		info, err := entry.Info()
-		if err != nil || info.ModTime().After(cutoff) { continue }
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
 		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil && !os.IsNotExist(err) {
-			m.logger.Warn("spool cleanup: cannot remove abandoned temp", "dir",dir,"name",entry.Name(),"error",err)
+			m.logger.Warn("spool cleanup: cannot remove abandoned temp", "dir", dir, "name", entry.Name(), "error", err)
 		}
 	}
 }

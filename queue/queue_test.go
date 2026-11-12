@@ -282,71 +282,115 @@ func TestFailedRetentionPreservesActiveDSNMarker(t *testing.T) {
 
 func TestAuthorizedAliasMayReceiveFailureReport(t *testing.T) {
 	m, err := New(Config{Dir: t.TempDir(), SendDSN: true}, testRouter{})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	env := &Envelope{
 		ID: "alias-dsn", From: "billing@example.test",
 		AuthUser: "alice@example.test", SenderAuthorized: true,
 		ServerName: "mail.example.test",
-		Recipients: []Recipient{{Address:"missing@remote.test",Status:"failed",LastError:"550 no such user"}},
+		Recipients: []Recipient{{Address: "missing@remote.test", Status: "failed", LastError: "550 no such user"}},
 	}
-	if err := m.sendFailureReports(env); err != nil { t.Fatal(err) }
-	if _, err := os.Stat(filepath.Join(m.cfg.Dir,recipientDSNID(env.ID,"missing@remote.test")+".json")); err != nil { t.Fatal(err) }
+	if err := m.sendFailureReports(env); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, recipientDSNID(env.ID, "missing@remote.test")+".json")); err != nil {
+		t.Fatal(err)
+	}
 	// Forged authorization without an authenticated identity is never eligible.
 	env.ID = "unauthenticated-alias"
 	env.AuthUser = ""
-	if err := m.sendFailureReports(env); err != nil { t.Fatal(err) }
-	if _, err := os.Stat(filepath.Join(m.cfg.Dir,recipientDSNID(env.ID,"missing@remote.test")+".json")); !os.IsNotExist(err) {
-		t.Fatalf("forged delegated sender produced DSN: %v",err)
+	if err := m.sendFailureReports(env); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, recipientDSNID(env.ID, "missing@remote.test")+".json")); !os.IsNotExist(err) {
+		t.Fatalf("forged delegated sender produced DSN: %v", err)
 	}
 }
 
 func TestMissingPayloadIsQuarantinedWithDiagnostics(t *testing.T) {
-	m, err := New(Config{Dir:t.TempDir(), MaxAttempts:2}, testRouter{})
-	if err != nil { t.Fatal(err) }
-	env := &Envelope{ID:"vanished", From:"external@example.test", Recipients:[]Recipient{{Address:"bob@example.test",Status:"pending"}}}
-	if err := atomicWrite(filepath.Join(m.cfg.Dir,env.ID+".json"),mustJSON(env),0o600); err != nil {t.Fatal(err)}
-	m.process(context.Background(),env)
-	for _, ext := range []string{".json",".reason"} {
-		if _, err := os.Stat(filepath.Join(m.cfg.Dir,"corrupt",env.ID+ext)); err != nil {t.Fatal(err)}
+	m, err := New(Config{Dir: t.TempDir(), MaxAttempts: 2}, testRouter{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(filepath.Join(m.cfg.Dir,env.ID+".json")); !os.IsNotExist(err) {t.Fatalf("unrecoverable envelope still active: %v",err)}
-	raw,err:=os.ReadFile(filepath.Join(m.cfg.Dir,"corrupt",env.ID+".json"))
-	if err!=nil {t.Fatal(err)}
+	env := &Envelope{ID: "vanished", From: "external@example.test", Recipients: []Recipient{{Address: "bob@example.test", Status: "pending"}}}
+	if err := atomicWrite(filepath.Join(m.cfg.Dir, env.ID+".json"), mustJSON(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.process(context.Background(), env)
+	for _, ext := range []string{".json", ".reason"} {
+		if _, err := os.Stat(filepath.Join(m.cfg.Dir, "corrupt", env.ID+ext)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, env.ID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("unrecoverable envelope still active: %v", err)
+	}
+	raw, err := os.ReadFile(filepath.Join(m.cfg.Dir, "corrupt", env.ID+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	var archived Envelope
-	if err:=json.Unmarshal(raw,&archived);err!=nil {t.Fatal(err)}
-	if archived.Recipients[0].Status!="failed" {t.Fatalf("corruption not recorded: %+v",archived)}
+	if err := json.Unmarshal(raw, &archived); err != nil {
+		t.Fatal(err)
+	}
+	if archived.Recipients[0].Status != "failed" {
+		t.Fatalf("corruption not recorded: %+v", archived)
+	}
 }
 
 func TestMalformedEnvelopeIsPreservedRatherThanRetried(t *testing.T) {
-	m,err:=New(Config{Dir:t.TempDir()},testRouter{})
-	if err!=nil {t.Fatal(err)}
-	bad:=[]byte("{invalid-json")
-	if err:=atomicWrite(filepath.Join(m.cfg.Dir,"corrupt-raw.json"),bad,0o600);err!=nil {t.Fatal(err)}
+	m, err := New(Config{Dir: t.TempDir()}, testRouter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bad := []byte("{invalid-json")
+	if err := atomicWrite(filepath.Join(m.cfg.Dir, "corrupt-raw.json"), bad, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	m.scan(context.Background())
-	raw,err:=os.ReadFile(filepath.Join(m.cfg.Dir,"corrupt","corrupt-raw.envelope"))
-	if err!=nil {t.Fatal(err)}
-	if string(raw)!=string(bad) {t.Fatalf("raw bytes changed: %q",raw)}
-	if _,err:=os.Stat(filepath.Join(m.cfg.Dir,"corrupt-raw.json")); !os.IsNotExist(err) {t.Fatalf("bad visible envelope remains: %v",err)}
+	raw, err := os.ReadFile(filepath.Join(m.cfg.Dir, "corrupt", "corrupt-raw.envelope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != string(bad) {
+		t.Fatalf("raw bytes changed: %q", raw)
+	}
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, "corrupt-raw.json")); !os.IsNotExist(err) {
+		t.Fatalf("bad visible envelope remains: %v", err)
+	}
 }
 
 func TestCleanupAncillarySpoolDirectories(t *testing.T) {
-	root:=t.TempDir()
-	quarantine:=filepath.Join(root,"quarantine")
-	queueDir:=filepath.Join(root,"queue")
-	m,err:=New(Config{Dir:queueDir,QuarantineDir:quarantine,OrphanGrace:time.Hour},testRouter{})
-	if err!=nil {t.Fatal(err)}
-	past:=time.Now().Add(-2*time.Hour)
-	for _,dir:=range []string{filepath.Join(queueDir,"failed"),filepath.Join(queueDir,"corrupt"),quarantine} {
-		if err:=os.MkdirAll(dir,0o700);err!=nil {t.Fatal(err)}
-		for _,name:=range []string{".tmp-old","preserved.json"} {
-			path:=filepath.Join(dir,name)
-			if err:=os.WriteFile(path,[]byte("data"),0o600);err!=nil {t.Fatal(err)}
-			if err:=os.Chtimes(path,past,past);err!=nil {t.Fatal(err)}
+	root := t.TempDir()
+	quarantine := filepath.Join(root, "quarantine")
+	queueDir := filepath.Join(root, "queue")
+	m, err := New(Config{Dir: queueDir, QuarantineDir: quarantine, OrphanGrace: time.Hour}, testRouter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-2 * time.Hour)
+	for _, dir := range []string{filepath.Join(queueDir, "failed"), filepath.Join(queueDir, "corrupt"), quarantine} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, name := range []string{".tmp-old", "preserved.json"} {
+			path := filepath.Join(dir, name)
+			if err := os.WriteFile(path, []byte("data"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chtimes(path, past, past); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 	m.cleanupSpool(time.Now())
-	for _,dir:=range []string{filepath.Join(queueDir,"failed"),filepath.Join(queueDir,"corrupt"),quarantine} {
-		if _,err:=os.Stat(filepath.Join(dir,".tmp-old"));!os.IsNotExist(err) {t.Fatalf("stale temp not cleaned in %s: %v",dir,err)}
-		if _,err:=os.Stat(filepath.Join(dir,"preserved.json"));err!=nil {t.Fatalf("visible record removed in %s: %v",dir,err)}
+	for _, dir := range []string{filepath.Join(queueDir, "failed"), filepath.Join(queueDir, "corrupt"), quarantine} {
+		if _, err := os.Stat(filepath.Join(dir, ".tmp-old")); !os.IsNotExist(err) {
+			t.Fatalf("stale temp not cleaned in %s: %v", dir, err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, "preserved.json")); err != nil {
+			t.Fatalf("visible record removed in %s: %v", dir, err)
+		}
 	}
 }
