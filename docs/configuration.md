@@ -465,3 +465,18 @@ Queue recipients are journaled before observational delivery hooks. Delivery
 status notifications are tracked per failed recipient and can be reconstructed
 from the persistent queue if a notification publication was interrupted.
 The transport remains at-least-once, including DSNs.
+
+ 
+## Spool reconciliation and retention
+
+The queue checks for orphaned `.eml` files without a matching visible `.json`
+envelope, and for stale interrupted `.tmp-*` files. `queue.orphan_grace`
+(default `24h`) keeps recent incomplete publications untouched. Cleanup runs
+at startup and hourly. It **never deletes visible queue entries**.
+
+`queue.failed_retention` is opt-in: `0s` (the default) retains failed
+messages and delivery-status markers indefinitely. Set a duration (at least
+`24h`) only after establishing backups and operational retention policies.
+Expired archive envelopes are removed before payloads. DSN markers are
+preserved as long as the associated original envelope remains in the spool
+or failed archive. Do not configure two writers against one spool directory.

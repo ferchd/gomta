@@ -105,6 +105,8 @@ func LoadWithOptions(configPath string, opts LoadOptions) (*App, error) {
 		Workers:     cfg.Queue.Workers,
 		MaxAttempts: cfg.Queue.MaxAttempts,
 		MaxAge:      cfg.Queue.MaxAge.Std(),
+		OrphanGrace: cfg.Queue.OrphanGrace.Std(),
+		FailedRetention: cfg.Queue.FailedRetention.Std(),
 		SendDSN:     cfg.Queue.SendDSN,
 		DSNInbound:  cfg.Queue.DSNInbound,
 		Plugins:     runner,
