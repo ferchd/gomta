@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"sort"
+	"net"
+	"net/textproto"
 	"strings"
 	"time"
 )
@@ -35,6 +38,11 @@ type PluginResult struct {
 	Outcome  Outcome
 	Err      error
 	Duration time.Duration
+
+	// Direct transaction changes are staged and only committed for completed
+	// plugins. A plugin that outlives its deadline cannot mutate the caller.
+	meta map[string]any
+	headers []Header
 
 	// index is the plugin's position in the configured priority order.
 	index int
@@ -250,7 +258,19 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 			res.TimedOut = true
 			break
 		}
-		pr := r.runOne(runCtx, ie, hook, tx)
+		done := make(chan PluginResult, 1)
+		go func(ie indexedEntry) {
+			done <- r.runOne(runCtx, ie, hook, tx)
+		}(ie)
+		var pr PluginResult
+		select {
+		case pr = <-done:
+		case <-runCtx.Done():
+			res.TimedOut = true
+		}
+		if res.TimedOut {
+			break
+		}
 		pr.index = ie.index
 		res.Outcomes = append(res.Outcomes, pr)
 		r.applyOutcome(tx, &pr, true)
@@ -310,15 +330,64 @@ func (r *Runner) runOne(ctx context.Context, ie indexedEntry, hook Hook, tx *Tx)
 	}
 	pluginCtx, pluginCancel := context.WithTimeout(ctx, ie.timeout)
 	defer pluginCancel()
+	// No plugin receives the parent transaction. Even a callback that ignores
+	// cancellation can only mutate its isolated snapshot.
+	local := snapshotTx(tx)
+	before := local.MetaSnapshot()
 	started := time.Now()
 	defer func() {
 		if rec := recover(); rec != nil {
 			pr.Err = fmt.Errorf("panic: %v", rec)
 		}
 		pr.Duration = time.Since(started)
+		if pr.Err == nil {
+			pr.meta = changedMeta(before, local.MetaSnapshot())
+			pr.headers = local.AddedHeaders()
+		}
 	}()
-	pr.Outcome, pr.Err = ie.plugin.Run(pluginCtx, hook, tx)
+	pr.Outcome, pr.Err = ie.plugin.Run(pluginCtx, hook, local)
+	if pr.Err == nil && pluginCtx.Err() != nil {
+		pr.Err = pluginCtx.Err()
+	}
 	return
+}
+
+func snapshotTx(src *Tx) *Tx {
+	dst := NewTx()
+	dst.ID = src.ID
+	dst.RemoteIP = append(dst.RemoteIP, src.RemoteIP...)
+	dst.RemoteIPs = append([]net.IP(nil), src.RemoteIPs...)
+	dst.RemoteAddr = src.RemoteAddr
+	dst.Helo = src.Helo
+	dst.TLS = src.TLS
+	dst.TLSVersion = src.TLSVersion
+	dst.AuthUser = src.AuthUser
+	dst.MailFrom = src.MailFrom
+	dst.RcptTo = append([]string(nil), src.RcptTo...)
+	dst.Recipient = src.Recipient
+	dst.Data = append([]byte(nil), src.Data...)
+	dst.Header = make(textproto.MIMEHeader, len(src.Header))
+	for key, values := range src.Header {
+		dst.Header[key] = append([]string(nil), values...)
+	}
+	dst.Size = src.Size
+	dst.Mode = src.Mode
+	dst.ServerName = src.ServerName
+	dst.Arrived = src.Arrived
+	for k, v := range src.MetaSnapshot() {
+		dst.SetMeta(k, v)
+	}
+	return dst
+}
+
+func changedMeta(before, after map[string]any) map[string]any {
+	changes := make(map[string]any)
+	for key, value := range after {
+		if old, ok := before[key]; !ok || !reflect.DeepEqual(old, value) {
+			changes[key] = value
+		}
+	}
+	return changes
 }
 
 // applyOutcome merges metadata, tags, headers, and body changes into tx. When
@@ -333,6 +402,12 @@ func (r *Runner) applyOutcome(tx *Tx, pr *PluginResult, immediate bool) {
 		}
 		r.logger.Log(context.Background(), level, "plugin error", "plugin", pr.Name, "hook", pr.Hook, "error", pr.Err, "duration", pr.Duration)
 		return
+	}
+	for k, v := range pr.meta {
+		tx.SetMeta(k, v)
+	}
+	for _, h := range pr.headers {
+		tx.AddHeader(h.Name, h.Value)
 	}
 	if pr.Outcome.Action != ActionContinue {
 		r.logger.Debug("plugin decision", "plugin", pr.Name, "hook", pr.Hook, "action", pr.Outcome.Action, "code", pr.Outcome.Code, "message", pr.Outcome.Message, "duration", pr.Duration)
