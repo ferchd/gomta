@@ -277,5 +277,7 @@ GoMTA is released under the [MIT License](LICENSE).
 
 GoMTA is usable as a small mail server or filtering MTA, but it is not a
 replacement for a full mail suite. It does not include a mailbox store, webmail,
-automatic bounce/DSN generation, or a configuration API. Back up the queue and
+a webmail interface or a configuration API. Failure DSNs are supported for
+authenticated submission by default in newly generated configurations;
+inbound DSNs require explicit opt-in to avoid backscatter. Back up the queue and
 use a real mailbox backend (LMTP, Maildir, or HTTP) where durability matters.

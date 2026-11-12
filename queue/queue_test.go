@@ -2,7 +2,12 @@ package queue
 
 import (
 	"context"
+	"errors"
 	"os"
+	"strings"
+	"time"
+
+	"github.com/ferchd/gomta/delivery"
 	"path/filepath"
 	"testing"
 )
@@ -78,5 +83,74 @@ func TestFinishArchivesFailedRecipientsBeforeSourceRemoval(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(m.cfg.Dir, env.ID+ext)); !os.IsNotExist(err) {
 			t.Fatalf("source remains %s: %v", ext, err)
 		}
+	}
+}
+
+ 
+func TestFailureDSNForAuthenticatedSubmission(t *testing.T) {
+	m, err := New(Config{Dir: t.TempDir(), SendDSN: true}, testRouter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &Envelope{ID: "item-dsn", From: "alice@example.test", AuthUser: "alice@example.test", ServerName: "mail.example.test", Mode: "submission", Recipients: []Recipient{
+		{Address: "missing@example.test", Status: "failed", LastError: "550 no such mailbox"},
+	}}
+	payload := []byte("From: alice@example.test\r\n\r\nbody\r\n")
+	if err := atomicWrite(filepath.Join(m.cfg.Dir, env.ID+".eml"), payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWrite(filepath.Join(m.cfg.Dir, env.ID+".json"), mustJSON(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.finish(env, payload)
+	raw, err := os.ReadFile(filepath.Join(m.cfg.Dir, env.ID+"-dsn.eml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "Content-Type: message/delivery-status") {
+		t.Fatalf("DSN is missing structured delivery status: %s", raw)
+	}
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, "failed", env.ID+".dsn")); err != nil {
+		t.Fatalf("missing DSN publication marker: %v", err)
+	}
+	// Archived source may be reconsidered without creating a new DSN.
+	m.finish(env, payload)
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, env.ID+"-dsn.json")); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestNoBackscatterForUnverifiedInboundMail(t *testing.T) {
+	m, err := New(Config{Dir: t.TempDir(), SendDSN: true}, testRouter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &Envelope{ID: "item-inbound", From: "spoofed@external.test", Recipients: []Recipient{
+		{Address: "missing@example.test", Status: "failed"},
+	}}
+	msg := []byte("body")
+	if err := atomicWrite(filepath.Join(m.cfg.Dir, env.ID+".eml"), msg, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWrite(filepath.Join(m.cfg.Dir, env.ID+".json"), mustJSON(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.finish(env, msg)
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, env.ID+"-dsn.json")); !os.IsNotExist(err) {
+		t.Fatalf("unsolicited DSN created for unauthenticated sender: %v", err)
+	}
+}
+
+func TestMessageAgeStopsRetries(t *testing.T) {
+	m, err := New(Config{Dir: t.TempDir(), MaxAge: 5 * 24 * time.Hour}, testRouter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &Envelope{ID: "age", Created: time.Now().Add(-6 * 24 * time.Hour), Recipients: []Recipient{
+		{Address: "missing@example.test", Status: "pending"},
+	}}
+	m.setResult(env, "missing@example.test", delivery.Temp(errors.New("timeout")))
+	if env.Recipients[0].Status != "failed" {
+		t.Fatalf("old message was kept pending: %+v", env.Recipients[0])
 	}
 }
