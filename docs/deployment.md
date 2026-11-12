@@ -316,7 +316,8 @@ image. It runs on:
 - pushes to `main` (publishes `latest`, `main`, and a `sha-<short>` tag);
 - tags matching `v*` (publishes the version tags);
 - pull requests (builds `linux/amd64` only and does not push);
-- manual `workflow_dispatch`.
+- manual `workflow_dispatch`, which builds without pushing unless the `push`
+  input is enabled.
 
 To enable publishing, add two repository secrets under
 **Settings → Secrets and variables → Actions**:
