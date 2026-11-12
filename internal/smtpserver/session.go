@@ -149,11 +149,11 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 	}
 
 	verify := func(username, password string) error {
-		if !s.srv.authGuard.begin(s.tx.RemoteAddr, username) {
+		if !s.srv.authGuard.begin(s.tx.RemoteAddr, s.guardAccountKey(username)) {
 			return smtp.ErrAuthFailed
 		}
 		resolvedUser := s.authenticate(username, password)
-		s.srv.authGuard.complete(s.tx.RemoteAddr, username, resolvedUser != "")
+		s.srv.authGuard.complete(s.tx.RemoteAddr, s.guardAccountKey(username), resolvedUser != "")
 		if resolvedUser == "" {
 			s.mu.Lock()
 			s.authFailures++
@@ -572,4 +572,24 @@ func (s *session) senderAuthorized(address string) bool {
 		}
 	}
 	return false
+}
+
+ 
+// guardAccountKey folds unambiguous short logins into the same account bucket
+// used by full-address authentication, without exposing whether it exists.
+func (s *session) guardAccountKey(username string) string {
+	username = strings.ToLower(strings.TrimSpace(username))
+	if strings.Contains(username, "@") || s.users == nil || s.users.HasUser(username) {
+		return username
+	}
+	var matched string
+	for _, domain := range s.srv.domains.List() {
+		candidate := username + "@" + domain
+		if s.users.HasUser(candidate) {
+			if matched != "" { return username } // ambiguous; preserve original
+			matched = candidate
+		}
+	}
+	if matched != "" { return matched }
+	return username
 }
