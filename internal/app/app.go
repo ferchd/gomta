@@ -83,6 +83,7 @@ func LoadWithOptions(configPath string, opts LoadOptions) (*App, error) {
 	runner, err := plugin.NewRunner(pluginCfg.Plugins, plugin.RunnerConfig{
 		Workers: pluginCfg.Workers,
 		Timeout: pluginCfg.Timeout.Std(),
+		MaxSnapshotBytes: cfg.Limits.MaxDataMemoryBytes,
 		BaseDir: cfg.BaseDir,
 		Logger:  logger,
 	})

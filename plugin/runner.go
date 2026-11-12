@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/textproto"
 	"reflect"
+	"sync"
 	"sort"
 	"strings"
 	"time"
@@ -27,6 +28,7 @@ type Definition struct {
 type RunnerConfig struct {
 	Workers int
 	Timeout time.Duration
+	MaxSnapshotBytes int64
 	BaseDir string
 	Logger  *slog.Logger
 }
@@ -86,6 +88,10 @@ type Runner struct {
 	workers int
 	timeout time.Duration
 	sem     chan struct{}
+	snapMu sync.Mutex
+	snapUsed int64
+	snapLimit int64
+	snapWake chan struct{}
 	hooks   map[Hook][]entry
 }
 
@@ -107,6 +113,8 @@ func NewRunner(defs []Definition, cfg RunnerConfig) (*Runner, error) {
 		workers: cfg.Workers,
 		timeout: cfg.Timeout,
 		sem:     make(chan struct{}, cfg.Workers),
+		snapLimit: cfg.MaxSnapshotBytes,
+		snapWake: make(chan struct{}),
 		hooks:   make(map[Hook][]entry),
 	}
 	bc := BuildContext{BaseDir: cfg.BaseDir, Logger: logger}
@@ -258,17 +266,23 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 			res.TimedOut = true
 			break
 		}
+		// The ordered timeout is enforced independently of the overall hook
+		// timeout. A misbehaving plugin only retains an isolated snapshot.
+		individualCtx, stop := context.WithTimeout(runCtx, ie.timeout)
 		done := make(chan PluginResult, 1)
 		go func(ie indexedEntry) {
-			done <- r.runOne(runCtx, ie, hook, tx)
+			done <- r.runOne(individualCtx, ie, hook, tx)
 		}(ie)
 		var pr PluginResult
 		select {
 		case pr = <-done:
-		case <-runCtx.Done():
+		case <-individualCtx.Done():
+			pr = PluginResult{Name: ie.plugin.Name(), Hook: hook, Err: individualCtx.Err(), index: ie.index}
 			res.TimedOut = true
 		}
+		stop()
 		if res.TimedOut {
+			res.Outcomes = append(res.Outcomes, pr)
 			break
 		}
 		pr.index = ie.index
@@ -330,6 +344,12 @@ func (r *Runner) runOne(ctx context.Context, ie indexedEntry, hook Hook, tx *Tx)
 	}
 	pluginCtx, pluginCancel := context.WithTimeout(ctx, ie.timeout)
 	defer pluginCancel()
+	// Bound the combined size of private DATA snapshots across active plugins.
+	if err := r.reserveSnapshot(pluginCtx, int64(len(tx.Data))); err != nil {
+		pr.Err = err
+		return
+	}
+	defer r.releaseSnapshot(int64(len(tx.Data)))
 	// No plugin receives the parent transaction. Even a callback that ignores
 	// cancellation can only mutate its isolated snapshot.
 	local := snapshotTx(tx)
@@ -375,7 +395,7 @@ func snapshotTx(src *Tx) *Tx {
 	dst.ServerName = src.ServerName
 	dst.Arrived = src.Arrived
 	for k, v := range src.MetaSnapshot() {
-		dst.SetMeta(k, v)
+		dst.SetMeta(k, cloneMetadata(v))
 	}
 	return dst
 }
@@ -478,3 +498,59 @@ func (r *Runner) Workers() int { return r.workers }
 
 // Timeout returns the overall per-hook timeout.
 func (r *Runner) Timeout() time.Duration { return r.timeout }
+
+ 
+// reserveSnapshot bounds private DATA copies independently from SMTP DATA
+// allocations. Zero means unlimited for externally constructed test runners.
+func (r *Runner) reserveSnapshot(ctx context.Context, size int64) error {
+	if size == 0 || r.snapLimit <= 0 { return nil }
+	if size > r.snapLimit { return fmt.Errorf("plugin snapshot exceeds memory budget") }
+	for {
+		r.snapMu.Lock()
+		if r.snapUsed+size <= r.snapLimit {
+			r.snapUsed += size
+			r.snapMu.Unlock()
+			return nil
+		}
+		wake := r.snapWake
+		r.snapMu.Unlock()
+		select {
+		case <-wake:
+		case <-ctx.Done(): return ctx.Err()
+		}
+	}
+}
+
+func (r *Runner) releaseSnapshot(size int64) {
+	if size == 0 || r.snapLimit <= 0 { return }
+	r.snapMu.Lock()
+	r.snapUsed -= size
+	close(r.snapWake)
+	r.snapWake = make(chan struct{})
+	r.snapMu.Unlock()
+}
+
+// cloneMetadata detaches commonly used JSON-like metadata containers.
+// Plugins should not place mutable custom pointer objects in metadata.
+func cloneMetadata(v any) any {
+	switch x := v.(type) {
+	case map[string]any:
+		copy := make(map[string]any, len(x))
+		for k, value := range x { copy[k] = cloneMetadata(value) }
+		return copy
+	case map[string]string:
+		copy := make(map[string]string, len(x))
+		for k, value := range x { copy[k] = value }
+		return copy
+	case []any:
+		copy := make([]any, len(x))
+		for i, value := range x { copy[i] = cloneMetadata(value) }
+		return copy
+	case []string: return append([]string(nil), x...)
+	case []byte: return append([]byte(nil), x...)
+	case []int: return append([]int(nil), x...)
+	case []bool: return append([]bool(nil), x...)
+	case []float64: return append([]float64(nil), x...)
+	default: return v
+	}
+}
