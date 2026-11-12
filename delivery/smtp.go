@@ -45,8 +45,16 @@ func NewSMTP(bc plugin.BuildContext, opts plugin.Options) (Backend, error) {
 	default:
 		return nil, fmt.Errorf("tls must be opportunistic, required, none or implicit, got %q", b.tlsMode)
 	}
-	if b.username != "" && b.password == "" {
-		return nil, errors.New("username is set but password is empty")
+	if b.username != "" {
+		if b.password == "" {
+			return nil, errors.New("username is set but password is empty")
+		}
+		if b.tlsMode != "required" && b.tlsMode != "implicit" {
+			return nil, errors.New("authenticated SMTP relay requires tls: required or implicit")
+		}
+		if b.insecure {
+			return nil, errors.New("authenticated SMTP relay cannot disable TLS certificate verification")
+		}
 	}
 	return b, nil
 }
@@ -71,39 +79,35 @@ func (b *smtpBackend) Deliver(ctx context.Context, m *Message) map[string]error 
 		hosts, err := b.hosts(ctx, domain)
 		if err != nil {
 			for _, rcpt := range rcpts {
-				results[rcpt] = Temp(err)
+				results[rcpt] = err
 			}
 			continue
 		}
-		var lastErr error
+		// A later MX must only receive recipients that have not succeeded or
+		// permanently failed at an earlier host.
+		remaining := append([]string(nil), rcpts...)
 		for _, host := range hosts {
-			hostResults, retry := b.sendToHost(ctx, host, m, rcpts)
-			for rcpt, e := range hostResults {
-				results[rcpt] = e
-			}
-			lastErr = nil
-			for _, e := range hostResults {
-				if e != nil {
-					lastErr = e
-				}
-			}
-			if !retry {
-				lastErr = nil
+			if len(remaining) == 0 {
 				break
 			}
-			if err := ctx.Err(); err != nil {
-				lastErr = Temp(err)
+			hostResults, retry := b.sendToHost(ctx, host, m, remaining)
+			next := make([]string, 0, len(remaining))
+			for _, rcpt := range remaining {
+				err, ok := hostResults[rcpt]
+				if !ok {
+					err = Temp(errors.New("MX backend returned no recipient status"))
+				}
+				results[rcpt] = err
+				if IsTemporary(err) {
+					next = append(next, rcpt)
+				}
+			}
+			remaining = next
+			if !retry || ctx.Err() != nil {
 				break
 			}
 		}
-		for _, rcpt := range rcpts {
-			if _, ok := results[rcpt]; !ok {
-				if lastErr == nil {
-					lastErr = Temp(errors.New("no MX host accepted the message"))
-				}
-				results[rcpt] = lastErr
-			}
-		}
+
 	}
 	return results
 }
@@ -125,6 +129,9 @@ func (b *smtpBackend) hosts(ctx context.Context, domain string) ([]string, error
 	}
 	if len(mxs) == 0 {
 		return []string{domain + ":25"}, nil
+	}
+	if len(mxs) == 1 && mxs[0].Pref == 0 && mxs[0].Host == "." {
+		return nil, Perm(fmt.Errorf("domain %s publishes Null MX (does not accept mail)", domain))
 	}
 	sort.SliceStable(mxs, func(i, j int) bool { return mxs[i].Pref < mxs[j].Pref })
 	out := make([]string, 0, len(mxs))
@@ -233,7 +240,13 @@ func (b *smtpBackend) sendToHost(ctx context.Context, host string, m *Message, r
 		results[rcpt] = nil
 	}
 	_ = client.Quit()
-	return results, false
+	retry := false
+	for _, e := range results {
+		if IsTemporary(e) {
+			retry = true
+		}
+	}
+	return results, retry
 }
 
 func (b *smtpBackend) dial(ctx context.Context, host string) (*smtp.Client, error) {

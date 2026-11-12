@@ -107,7 +107,7 @@ func (b *httpBackend) Deliver(ctx context.Context, m *Message) map[string]error 
 	}
 	var e error
 	msg := strings.TrimSpace(string(body))
-	if resp.StatusCode >= 400 && resp.StatusCode < 500 {
+	if resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusRequestTimeout && resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode != http.StatusTooEarly {
 		e = Perm(fmt.Errorf("webhook returned %d: %s", resp.StatusCode, msg))
 	} else {
 		e = Temp(fmt.Errorf("webhook returned %d: %s", resp.StatusCode, msg))
