@@ -8,8 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -575,7 +575,6 @@ func SortRecipients(rs []Recipient) {
 	sort.Slice(rs, func(i, j int) bool { return rs[i].Address < rs[j].Address })
 }
 
- 
 // Ready reports whether the queue worker pool has started.
 func (m *Manager) Ready() bool { return m.ready.Load() }
 
