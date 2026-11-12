@@ -377,6 +377,9 @@ func (c *Config) Validate() error {
 		default:
 			errs = append(errs, fmt.Errorf("%s: tls must be starttls, implicit or none, got %q", prefix, l.TLS))
 		}
+		if l.MaxMessageBytes+1 > c.Limits.MaxDataMemoryBytes {
+			errs = append(errs, fmt.Errorf("%s: max_message_bytes exceeds shared DATA memory budget", prefix))
+		}
 		if l.Address != "" && !strings.HasSuffix(l.Address, ":0") {
 			if seenAddr[l.Address] {
 				errs = append(errs, fmt.Errorf("%s: duplicate address %s", prefix, l.Address))

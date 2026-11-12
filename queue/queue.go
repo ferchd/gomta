@@ -4,6 +4,7 @@ package queue
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -105,6 +106,7 @@ type Manager struct {
 	jobs chan *Envelope
 
 	mu       sync.Mutex
+	dsnMu    sync.Mutex
 	inflight map[string]bool
 	wg       sync.WaitGroup
 	ready    atomic.Bool
@@ -209,7 +211,7 @@ func (m *Manager) Start(ctx context.Context) error {
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 	m.scan(ctx)
-	m.ready.Store(true)
+	m.ready.Store(m.spoolWritable())
 	for {
 		select {
 		case <-ctx.Done():
@@ -217,6 +219,7 @@ func (m *Manager) Start(ctx context.Context) error {
 			return nil
 		case <-ticker.C:
 			m.scan(ctx)
+			m.ready.Store(m.spoolWritable())
 		case <-m.wake:
 			m.scan(ctx)
 		}
@@ -250,6 +253,7 @@ func (m *Manager) worker(ctx context.Context) {
 func (m *Manager) scan(ctx context.Context) {
 	entries, err := os.ReadDir(m.cfg.Dir)
 	if err != nil {
+		m.ready.Store(false)
 		m.logger.Error("queue scan failed", "error", err)
 		return
 	}
@@ -273,6 +277,9 @@ func (m *Manager) scan(ctx context.Context) {
 		if err := json.Unmarshal(raw, &env); err != nil {
 			m.logger.Error("queue: corrupt envelope", "id", id, "error", err)
 			continue
+		}
+		if err := m.sendFailureReports(&env); err != nil {
+			m.logger.Error("queue: notify failed recipients", "id", env.ID, "error", err)
 		}
 		if !env.NextAttempt.IsZero() && env.NextAttempt.After(now) {
 			continue
@@ -311,6 +318,17 @@ func (m *Manager) process(ctx context.Context, env *Envelope) {
 		return
 	}
 	if len(env.Pending()) == 0 {
+		m.finish(env, msg)
+		return
+	}
+	if !env.Created.IsZero() && time.Since(env.Created) >= m.cfg.MaxAge {
+		for _, rcpt := range env.Pending() {
+			m.setResult(env, rcpt, delivery.Temp(errors.New("message exceeded maximum queue age")))
+		}
+		if err := atomicWrite(jsonPath, mustJSON(env), 0o600); err != nil {
+			m.logger.Error("queue: persist expired message failed", "id", env.ID, "error", err)
+			return
+		}
 		m.finish(env, msg)
 		return
 	}
@@ -356,7 +374,6 @@ func (m *Manager) process(ctx context.Context, env *Envelope) {
 				err = delivery.Temp(errors.New("delivery backend returned no result"))
 			}
 			m.setResult(env, rcpt, err)
-			m.notifyDelivery(ctx, env, rcpt, err, msg)
 		}
 		// Commit each independently routed group before attempting another:
 		// this reduces duplicate delivery after interruption, while the SMTP
@@ -364,6 +381,13 @@ func (m *Manager) process(ctx context.Context, env *Envelope) {
 		if err := atomicWrite(jsonPath, mustJSON(env), 0o600); err != nil {
 			m.logger.Error("queue: persist recipient group outcomes failed", "id", env.ID, "error", err)
 			return
+		}
+		// Observational hooks execute only after all outcomes are durable.
+		for _, rcpt := range g.rcpts {
+			m.notifyDelivery(ctx, env, rcpt, results[rcpt], msg)
+		}
+		if err := m.sendFailureReports(env); err != nil {
+			m.logger.Error("queue: DSN publication deferred", "id", env.ID, "error", err)
 		}
 	}
 
@@ -463,7 +487,7 @@ func (m *Manager) finish(env *Envelope, msg []byte) {
 			m.logger.Error("queue: archive failed envelope", "id", env.ID, "error", err)
 			return
 		}
-		if err := m.sendFailureReport(env, failed); err != nil {
+		if err := m.sendFailureReports(env); err != nil {
 			m.logger.Error("queue: cannot publish delivery status report", "id", env.ID, "error", err)
 			return
 		}
@@ -613,25 +637,39 @@ func (m *Manager) notifyDelivery(ctx context.Context, env *Envelope, rcpt string
 	}
 }
 
-// sendFailureReport enqueues a best-effort, idempotently named DSN for
-// authenticated submission. Inbound reports require an explicit opt-in to
-// prevent backscatter from forged sender addresses.
-func (m *Manager) sendFailureReport(env *Envelope, failed []Recipient) error {
+// sendFailureReports publishes an independent DSN for each permanently failed
+// recipient. Stable IDs and durable markers prevent ordinary duplicate notices.
+func (m *Manager) sendFailureReports(env *Envelope) error {
 	if !m.cfg.SendDSN || env.From == "" || !plugin.ValidAddress(env.From, false) {
 		return nil
 	}
 	if !m.cfg.DSNInbound && !strings.EqualFold(env.AuthUser, env.From) {
 		return nil
 	}
-	marker := filepath.Join(m.cfg.Dir, "failed", env.ID+".dsn")
+	m.dsnMu.Lock()
+	defer m.dsnMu.Unlock()
+	for _, recipient := range env.Failed() {
+		if err := m.sendRecipientFailureReport(env, recipient); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (m *Manager) sendRecipientFailureReport(env *Envelope, failed Recipient) error {
+	hash := sha256.Sum256([]byte(strings.ToLower(failed.Address)))
+	id := env.ID + "-dsn-" + hex.EncodeToString(hash[:8])
+	marker := filepath.Join(m.cfg.Dir, "failed", id+".dsn")
 	if _, err := os.Stat(marker); err == nil {
 		return nil
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	id := env.ID + "-dsn"
-	// If a prior attempt published the DSN but failed to store its marker,
-	// preserve the existing queue record instead of overwriting it.
+	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+		return err
+	}
+	// A restart after queue publication must not overwrite a previously
+	// delivered or in-flight DSN. Marker durability is handled separately.
 	if _, err := os.Stat(filepath.Join(m.cfg.Dir, id+".json")); err == nil {
 		return atomicWrite(marker, []byte("queued\n"), 0o600)
 	} else if !os.IsNotExist(err) {
@@ -641,15 +679,25 @@ func (m *Manager) sendFailureReport(env *Envelope, failed []Recipient) error {
 	if !plugin.ValidAddress("postmaster@"+host, false) {
 		host = "localhost"
 	}
-	message := buildDSNMessage(host, env, failed)
 	report := &Envelope{
 		ID: id, From: "", Mode: string(plugin.ModeMTA), ServerName: host,
 		Recipients: []Recipient{{Address: env.From, Status: "pending"}},
 	}
-	if err := m.Enqueue(context.Background(), report, message); err != nil {
+	if err := m.Enqueue(context.Background(), report, buildDSNMessage(host, env, []Recipient{failed})); err != nil {
 		return err
 	}
 	return atomicWrite(marker, []byte("queued\n"), 0o600)
+}
+
+// spoolWritable probes the same directory where envelope transactions commit.
+func (m *Manager) spoolWritable() bool {
+	f, err := os.CreateTemp(m.cfg.Dir, ".readiness-*")
+	if err != nil {
+		return false
+	}
+	name := f.Name()
+	_ = f.Close()
+	return os.Remove(name) == nil
 }
 
 func buildDSNMessage(host string, env *Envelope, failed []Recipient) []byte {

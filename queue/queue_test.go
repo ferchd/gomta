@@ -2,6 +2,8 @@ package queue
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"strings"
@@ -102,19 +104,20 @@ func TestFailureDSNForAuthenticatedSubmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.finish(env, payload)
-	raw, err := os.ReadFile(filepath.Join(m.cfg.Dir, env.ID+"-dsn.eml"))
+	dsnID := recipientDSNID(env.ID, "missing@example.test")
+	raw, err := os.ReadFile(filepath.Join(m.cfg.Dir, dsnID+".eml"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !strings.Contains(string(raw), "Content-Type: message/delivery-status") {
 		t.Fatalf("DSN is missing structured delivery status: %s", raw)
 	}
-	if _, err := os.Stat(filepath.Join(m.cfg.Dir, "failed", env.ID+".dsn")); err != nil {
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, "failed", dsnID+".dsn")); err != nil {
 		t.Fatalf("missing DSN publication marker: %v", err)
 	}
 	// Archived source may be reconsidered without creating a new DSN.
 	m.finish(env, payload)
-	if _, err := os.Stat(filepath.Join(m.cfg.Dir, env.ID+"-dsn.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, dsnID+".json")); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -152,4 +155,30 @@ func TestMessageAgeStopsRetries(t *testing.T) {
 	if env.Recipients[0].Status != "failed" {
 		t.Fatalf("old message was kept pending: %+v", env.Recipients[0])
 	}
+}
+
+// recipientDSNID follows the deterministic, recipient-specific queue key.
+func recipientDSNID(envelopeID, address string) string {
+	h := sha256.Sum256([]byte(strings.ToLower(address)))
+	return envelopeID + "-dsn-" + hex.EncodeToString(h[:8])
+}
+
+func TestFailureDSNWhileOtherRecipientStillPending(t *testing.T) {
+	m, err := New(Config{Dir: t.TempDir(), SendDSN: true}, testRouter{})
+	if err != nil { t.Fatal(err) }
+	env := &Envelope{ID: "partial-dsn", From: "alice@example.test", AuthUser: "alice@example.test", ServerName: "mail.example.test", Recipients: []Recipient{
+		{Address: "failed@example.test", Status: "failed", LastError: "550 no such mailbox"},
+		{Address: "pending@example.test", Status: "pending"},
+	}}
+	if err := m.sendFailureReports(env); err != nil { t.Fatal(err) }
+	id := recipientDSNID(env.ID, "failed@example.test")
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, id+".json")); err != nil { t.Fatal(err) }
+	if err := m.sendFailureReports(env); err != nil { t.Fatal(err) }
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, "failed", id+".dsn")); err != nil { t.Fatal(err) }
+}
+
+func TestSpoolReadinessOnWritableDirectory(t *testing.T) {
+	m, err := New(Config{Dir: t.TempDir()}, testRouter{})
+	if err != nil { t.Fatal(err) }
+	if !m.spoolWritable() { t.Fatal("writable spool reported unavailable") }
 }
