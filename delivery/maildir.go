@@ -3,6 +3,7 @@ package delivery
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -113,11 +114,14 @@ func safeComponent(s string) string {
 		changed = true
 	}
 	out := b.String()
-	if changed {
-		out += "-" + randomHex(3)
-	}
-	if len(out) > 120 {
-		out = out[:100] + "-" + randomHex(4)
+	if changed || len(out) > 120 {
+		// Stable collision-resistant suffix: the same address always maps to
+		// the same mailbox and distinct originals rarely collide.
+		hash := sha256.Sum256([]byte(s))
+		if len(out) > 100 {
+			out = out[:100]
+		}
+		out += "-" + hex.EncodeToString(hash[:8])
 	}
 	return out
 }

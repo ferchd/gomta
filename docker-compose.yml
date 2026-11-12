@@ -13,7 +13,7 @@ services:
       GOMTA_HOSTNAME: ${GOMTA_HOSTNAME:-mail.example.com}
       GOMTA_DOMAINS: ${GOMTA_DOMAINS:-example.com}
       GOMTA_ADMIN_USER: ${GOMTA_ADMIN_USER:-postmaster@example.com}
-      GOMTA_ADMIN_PASSWORD: ${GOMTA_ADMIN_PASSWORD:-changeme}
+      GOMTA_ADMIN_PASSWORD: ${GOMTA_ADMIN_PASSWORD:?Set GOMTA_ADMIN_PASSWORD to a strong non-default value}
       GOMTA_DKIM_SELECTOR: ${GOMTA_DKIM_SELECTOR:-default}
       GOMTA_STATUS_ADDR: 0.0.0.0:8080
       GOMTA_HEALTHCHECK_URL: http://127.0.0.1:8080/healthz

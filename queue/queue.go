@@ -464,10 +464,10 @@ func SaveQuarantine(dataDir string, env *Envelope, msg []byte) error {
 	if env.ID == "" {
 		env.ID = NewID()
 	}
-	if err := atomicWrite(filepath.Join(dir, env.ID+".json"), mustJSON(env), 0o600); err != nil {
+	if err := atomicWrite(filepath.Join(dir, env.ID+".eml"), msg, 0o600); err != nil {
 		return err
 	}
-	return atomicWrite(filepath.Join(dir, env.ID+".eml"), msg, 0o600)
+	return atomicWrite(filepath.Join(dir, env.ID+".json"), mustJSON(env), 0o600)
 }
 
 // Stats reports queued, failed, and quarantined message counts.

@@ -162,3 +162,17 @@ func TestParseHooks(t *testing.T) {
 		t.Fatal("expected error for unknown hook")
 	}
 }
+
+func TestRunnerPanicRespectsFailClosed(t *testing.T) {
+    broken := &testPlugin{name: "panics", hooks: []Hook{HookData}, run: func(context.Context, Hook, *Tx) (Outcome, error) {
+        panic("unexpected failure")
+    }}
+    e := testEntry(broken, 0, 0)
+    e.failClosed = true
+    r := newTestRunner(t, map[Hook][]entry{HookData: {e}})
+    result := r.Run(context.Background(), HookData, NewTx())
+    if result.Decision.Action != ActionTempFail { t.Fatalf("expected fail-closed temporary failure: %+v", result.Decision) }
+    if len(result.Outcomes) != 1 || result.Outcomes[0].Name != "panics" || result.Outcomes[0].Err == nil {
+        t.Fatalf("panic outcome not preserved: %+v", result.Outcomes)
+    }
+}

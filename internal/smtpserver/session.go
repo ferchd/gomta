@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/mail"
 	"net/textproto"
 	"strings"
 	"sync"
@@ -145,7 +146,8 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 	s.mu.Unlock()
 
 	verify := func(username, password string) error {
-		if !s.authenticate(username, password) {
+		resolvedUser := s.authenticate(username, password)
+		if resolvedUser == "" {
 			s.mu.Lock()
 			s.authFailures++
 			s.mu.Unlock()
@@ -154,7 +156,7 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 		}
 		s.mu.Lock()
 		s.authed = true
-		s.authUser = strings.ToLower(strings.TrimSpace(username))
+		s.authUser = resolvedUser
 		s.tx.AuthUser = s.authUser
 		s.mu.Unlock()
 		s.srv.logger.Info("authentication succeeded", "remote", s.tx.RemoteAddr, "user", s.authUser)
@@ -173,21 +175,22 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 	}
 }
 
-func (s *session) authenticate(username, password string) bool {
-	username = strings.TrimSpace(username)
+func (s *session) authenticate(username, password string) string {
+	username = strings.ToLower(strings.TrimSpace(username))
 	if s.users.Authenticate(username, password) {
-		return true
+		return username
 	}
 	if strings.Contains(username, "@") {
-		return false
+		return ""
 	}
-	// Allow short login names when the users file uses full addresses.
+	// Resolve short logins to their actual authenticated mailbox identity.
 	for _, domain := range s.srv.domains.List() {
-		if s.users.Authenticate(username+"@"+domain, password) {
-			return true
+		resolved := username + "@" + domain
+		if s.users.Authenticate(resolved, password) {
+			return resolved
 		}
 	}
-	return false
+	return ""
 }
 
 type loginServer struct {
@@ -225,6 +228,9 @@ func (s *session) Mail(from string, opts *smtp.MailOptions) error {
 	from = plugin.NormalizeAddress(from)
 	if !plugin.ValidAddress(from, true) {
 		return smtpError(501, 5, 1, 7, "Invalid sender address")
+	}
+	if s.isAuthed() && !strings.EqualFold(from, s.authUser) {
+		return smtpError(553, 5, 7, 1, "Sender is not authorized for this account")
 	}
 	s.tx.MailFrom = from
 	s.mailSet = true
@@ -305,6 +311,16 @@ func (s *session) Data(r io.Reader) error {
 	s.tx.Data = data
 	s.tx.Size = int64(len(data))
 	s.tx.Header = parseHeader(data)
+	if s.isAuthed() {
+		fromValues := s.tx.Header.Values("From")
+		if len(fromValues) != 1 {
+			return smtpError(553, 5, 7, 1, "Exactly one From header is required")
+		}
+		addrs, parseErr := mail.ParseAddressList(fromValues[0])
+		if parseErr != nil || len(addrs) != 1 || !strings.EqualFold(addrs[0].Address, s.authUser) {
+			return smtpError(553, 5, 7, 1, "From header is not authorized for this account")
+		}
+	}
 
 	res := s.srv.plugins.Run(context.Background(), plugin.HookData, s.tx)
 	switch res.Decision.Action {
