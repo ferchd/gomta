@@ -107,6 +107,7 @@ func LoadWithOptions(configPath string, opts LoadOptions) (*App, error) {
 		MaxAge:          cfg.Queue.MaxAge.Std(),
 		OrphanGrace:     cfg.Queue.OrphanGrace.Std(),
 		FailedRetention: cfg.Queue.FailedRetention.Std(),
+		QuarantineDir: filepath.Join(cfg.DataDir, "quarantine"),
 		SendDSN:         cfg.Queue.SendDSN,
 		DSNInbound:      cfg.Queue.DSNInbound,
 		Plugins:         runner,

@@ -328,3 +328,25 @@ func TestMalformedEnvelopeIsPreservedRatherThanRetried(t *testing.T) {
 	if string(raw)!=string(bad) {t.Fatalf("raw bytes changed: %q",raw)}
 	if _,err:=os.Stat(filepath.Join(m.cfg.Dir,"corrupt-raw.json")); !os.IsNotExist(err) {t.Fatalf("bad visible envelope remains: %v",err)}
 }
+
+func TestCleanupAncillarySpoolDirectories(t *testing.T) {
+	root:=t.TempDir()
+	quarantine:=filepath.Join(root,"quarantine")
+	queueDir:=filepath.Join(root,"queue")
+	m,err:=New(Config{Dir:queueDir,QuarantineDir:quarantine,OrphanGrace:time.Hour},testRouter{})
+	if err!=nil {t.Fatal(err)}
+	past:=time.Now().Add(-2*time.Hour)
+	for _,dir:=range []string{filepath.Join(queueDir,"failed"),filepath.Join(queueDir,"corrupt"),quarantine} {
+		if err:=os.MkdirAll(dir,0o700);err!=nil {t.Fatal(err)}
+		for _,name:=range []string{".tmp-old","preserved.json"} {
+			path:=filepath.Join(dir,name)
+			if err:=os.WriteFile(path,[]byte("data"),0o600);err!=nil {t.Fatal(err)}
+			if err:=os.Chtimes(path,past,past);err!=nil {t.Fatal(err)}
+		}
+	}
+	m.cleanupSpool(time.Now())
+	for _,dir:=range []string{filepath.Join(queueDir,"failed"),filepath.Join(queueDir,"corrupt"),quarantine} {
+		if _,err:=os.Stat(filepath.Join(dir,".tmp-old"));!os.IsNotExist(err) {t.Fatalf("stale temp not cleaned in %s: %v",dir,err)}
+		if _,err:=os.Stat(filepath.Join(dir,"preserved.json"));err!=nil {t.Fatalf("visible record removed in %s: %v",dir,err)}
+	}
+}
