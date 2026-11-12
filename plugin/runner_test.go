@@ -263,3 +263,16 @@ func TestPluginNestedMetadataChangesArePropagated(t *testing.T) {
 		t.Fatal("in-place nested metadata modification was lost")
 	}
 }
+
+func TestRunnerRejectsOversizedPluginBodyBeforeApplyingIt(t *testing.T) {
+	large := &testPlugin{name:"oversize", hooks: []Hook{HookData}, ordered:true, run:func(_ context.Context,_ Hook,_ *Tx)(Outcome,error){
+		return Outcome{Action:ActionContinue,Body:[]byte("123456789")},nil
+	}}
+	r := newTestRunner(t,map[Hook][]entry{HookData:{testEntry(large,0,0)}})
+	tx := NewTx()
+	tx.Data = []byte("original")
+	tx.MaxBodyBytes = 8
+	result := r.Run(context.Background(),HookData,tx)
+	if result.Decision.Action!=ActionTempFail {t.Fatalf("oversized body not rejected: %+v",result)}
+	if string(tx.Data)!="original" {t.Fatalf("oversized body applied: %q",tx.Data)}
+}

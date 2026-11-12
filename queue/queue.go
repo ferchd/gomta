@@ -217,19 +217,18 @@ func (m *Manager) Start(ctx context.Context) error {
 	defer ticker.Stop()
 	maintenance := time.NewTicker(time.Hour)
 	defer maintenance.Stop()
-	m.scan(ctx)
+	healthy := m.scan(ctx)
 	m.cleanupSpool(time.Now())
-	m.ready.Store(m.spoolWritable())
+	m.ready.Store(healthy && m.spoolWritable())
 	for {
 		select {
 		case <-ctx.Done():
 			m.wg.Wait()
 			return nil
 		case <-ticker.C:
-			m.scan(ctx)
-			m.ready.Store(m.spoolWritable())
+			m.ready.Store(m.scan(ctx) && m.spoolWritable())
 		case <-m.wake:
-			m.scan(ctx)
+			m.ready.Store(m.scan(ctx) && m.spoolWritable())
 		case <-maintenance.C:
 			m.cleanupSpool(time.Now())
 		}
@@ -260,13 +259,14 @@ func (m *Manager) worker(ctx context.Context) {
 	}
 }
 
-func (m *Manager) scan(ctx context.Context) {
+func (m *Manager) scan(ctx context.Context) bool {
 	entries, err := os.ReadDir(m.cfg.Dir)
 	if err != nil {
 		m.ready.Store(false)
 		m.logger.Error("queue scan failed", "error", err)
-		return
+		return false
 	}
+	healthy := true
 	now := time.Now()
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
@@ -281,14 +281,18 @@ func (m *Manager) scan(ctx context.Context) {
 		m.mu.Unlock()
 		raw, err := os.ReadFile(filepath.Join(m.cfg.Dir, entry.Name()))
 		if err != nil {
+			healthy = false
+			m.logger.Error("queue: cannot read visible envelope", "id", id, "error", err)
 			continue
 		}
 		var env Envelope
 		if err := json.Unmarshal(raw, &env); err != nil {
+			healthy = false
 			m.logger.Error("queue: corrupt envelope", "id", id, "error", err)
 			continue
 		}
 		if err := m.sendFailureReports(&env); err != nil {
+			healthy = false
 			m.logger.Error("queue: notify failed recipients", "id", env.ID, "error", err)
 		}
 		if !env.NextAttempt.IsZero() && env.NextAttempt.After(now) {
@@ -308,13 +312,14 @@ func (m *Manager) scan(ctx context.Context) {
 		select {
 		case m.jobs <- &env:
 		case <-ctx.Done():
-			return
+			return false
 		default:
 			m.mu.Lock()
 			delete(m.inflight, id)
 			m.mu.Unlock()
 		}
 	}
+	return healthy
 }
 
 func (m *Manager) process(ctx context.Context, env *Envelope) {
@@ -704,12 +709,27 @@ func (m *Manager) sendRecipientFailureReport(env *Envelope, failed Recipient) er
 // spoolWritable probes the same directory where envelope transactions commit.
 func (m *Manager) spoolWritable() bool {
 	f, err := os.CreateTemp(m.cfg.Dir, ".readiness-*")
-	if err != nil {
+	if err != nil { return false }
+	name := f.Name()
+	defer os.Remove(name)
+	if _, err := f.Write([]byte("durability-check")); err != nil {
+		_ = f.Close()
 		return false
 	}
-	name := f.Name()
-	_ = f.Close()
-	return os.Remove(name) == nil
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return false
+	}
+	if err := f.Close(); err != nil { return false }
+	if err := os.Remove(name); err != nil { return false }
+	if runtime.GOOS != "windows" {
+		d, err := os.Open(m.cfg.Dir)
+		if err != nil { return false }
+		err = d.Sync()
+		_ = d.Close()
+		if err != nil { return false }
+	}
+	return true
 }
 
 func buildDSNMessage(host string, env *Envelope, failed []Recipient) []byte {
