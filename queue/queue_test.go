@@ -182,3 +182,15 @@ func TestSpoolReadinessOnWritableDirectory(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	if !m.spoolWritable() { t.Fatal("writable spool reported unavailable") }
 }
+
+func TestScanRecoversPendingRecipientDSN(t *testing.T) {
+	m, err := New(Config{Dir: t.TempDir(), SendDSN: true}, testRouter{})
+	if err != nil { t.Fatal(err) }
+	env := &Envelope{ID: "scan-dsn", From: "alice@example.test", AuthUser: "alice@example.test", ServerName: "mail.example.test", NextAttempt: time.Now().Add(time.Hour),
+		Recipients: []Recipient{{Address: "failed@example.test", Status: "failed"}, {Address: "later@example.test", Status: "pending"}}}
+	if err := atomicWrite(filepath.Join(m.cfg.Dir, env.ID+".json"), mustJSON(env), 0o600); err != nil { t.Fatal(err) }
+	if err := atomicWrite(filepath.Join(m.cfg.Dir, env.ID+".eml"), []byte("message"), 0o600); err != nil { t.Fatal(err) }
+	m.scan(context.Background())
+	id := recipientDSNID(env.ID, "failed@example.test")
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, id+".json")); err != nil { t.Fatalf("scan did not recover failed recipient notice: %v", err) }
+}
