@@ -10,8 +10,8 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"time"
 	"sync/atomic"
+	"time"
 
 	"github.com/emersion/go-smtp"
 	"github.com/ferchd/gomta/config"
@@ -42,12 +42,12 @@ type Server struct {
 	tls     *tls.Config
 	relay   []*net.IPNet
 
-	addrMu   sync.Mutex
-	runtimes []*runtime
-	ready atomic.Bool
-	limits *connectionLimits
+	addrMu    sync.Mutex
+	runtimes  []*runtime
+	ready     atomic.Bool
+	limits    *connectionLimits
 	authGuard *authFailureGuard
-	memory *memoryBudget
+	memory    *memoryBudget
 }
 
 type runtime struct {
@@ -71,16 +71,16 @@ func New(deps Deps) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		cfg:     deps.Config,
-		domains: deps.Domains,
-		users:   deps.Users,
-		plugins: deps.Plugins,
-		queue:   deps.Queue,
-		logger:  logger,
-		relay:   relay,
-		limits: &connectionLimits{max: deps.Config.Limits.MaxConnections, maxPerIP: deps.Config.Limits.MaxConnectionsPerIP, counts: make(map[string]int)},
+		cfg:       deps.Config,
+		domains:   deps.Domains,
+		users:     deps.Users,
+		plugins:   deps.Plugins,
+		queue:     deps.Queue,
+		logger:    logger,
+		relay:     relay,
+		limits:    &connectionLimits{max: deps.Config.Limits.MaxConnections, maxPerIP: deps.Config.Limits.MaxConnectionsPerIP, counts: make(map[string]int)},
 		authGuard: newAuthFailureGuard(deps.Config.Limits.MaxAuthFailures),
-		memory: newMemoryBudget(deps.Config.Limits.MaxDataMemoryBytes),
+		memory:    newMemoryBudget(deps.Config.Limits.MaxDataMemoryBytes),
 	}
 	needTLS := false
 	for _, l := range deps.Config.Listeners {

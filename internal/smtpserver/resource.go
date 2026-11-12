@@ -9,26 +9,30 @@ import (
 )
 
 type failureWindow struct {
-	count int
+	count   int
 	expires time.Time
 }
 
 type authFailureGuard struct {
-	mu sync.Mutex
+	mu       sync.Mutex
 	attempts map[string]failureWindow
-	max int
-	window time.Duration
+	max      int
+	window   time.Duration
 }
 
 func newAuthFailureGuard(perSession int) *authFailureGuard {
 	max := perSession * 4
-	if max < 10 { max = 10 }
-	return &authFailureGuard{attempts: make(map[string]failureWindow), max: max, window: 15*time.Minute}
+	if max < 10 {
+		max = 10
+	}
+	return &authFailureGuard{attempts: make(map[string]failureWindow), max: max, window: 15 * time.Minute}
 }
 
 func (g *authFailureGuard) key(remote string) string {
 	ip, _, err := net.SplitHostPort(remote)
-	if err == nil { return ip }
+	if err == nil {
+		return ip
+	}
 	return remote
 }
 
@@ -50,12 +54,16 @@ func (g *authFailureGuard) failure(remote string) {
 	k := g.key(remote)
 	now := time.Now()
 	w := g.attempts[k]
-	if now.After(w.expires) { w = failureWindow{expires: now.Add(g.window)} }
+	if now.After(w.expires) {
+		w = failureWindow{expires: now.Add(g.window)}
+	}
 	w.count++
 	g.attempts[k] = w
 	if len(g.attempts) > 10000 {
 		for key, v := range g.attempts {
-			if now.After(v.expires) { delete(g.attempts, key) }
+			if now.After(v.expires) {
+				delete(g.attempts, key)
+			}
 		}
 	}
 }
@@ -68,10 +76,10 @@ func (g *authFailureGuard) success(remote string) {
 
 // memoryBudget atomically reserves DATA byte budgets across all listeners.
 type memoryBudget struct {
-	mu sync.Mutex
+	mu    sync.Mutex
 	limit int64
-	used int64
-	wait chan struct{}
+	used  int64
+	wait  chan struct{}
 }
 
 func newMemoryBudget(limit int64) *memoryBudget {
@@ -79,7 +87,9 @@ func newMemoryBudget(limit int64) *memoryBudget {
 }
 
 func (m *memoryBudget) acquire(ctx context.Context, n int64) error {
-	if n <= 0 || n > m.limit { return errors.New("message exceeds configured memory budget") }
+	if n <= 0 || n > m.limit {
+		return errors.New("message exceeds configured memory budget")
+	}
 	for {
 		m.mu.Lock()
 		if m.used+n <= m.limit {

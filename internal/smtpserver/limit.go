@@ -18,11 +18,11 @@ type limitListener struct {
 
 // connectionLimits is shared across all configured SMTP listeners.
 type connectionLimits struct {
-	mu sync.Mutex
-	max int
+	mu       sync.Mutex
+	max      int
 	maxPerIP int
-	total int
-	counts map[string]int
+	total    int
+	counts   map[string]int
 }
 
 func (l *limitListener) Accept() (net.Conn, error) {
