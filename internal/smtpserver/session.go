@@ -282,7 +282,14 @@ func (s *session) Rcpt(to string, opts *smtp.RcptOptions) error {
 	if s.srv.cfg.Limits.ValidateLocalRecipients && s.srv.domains.IsLocal(domain) && (s.users == nil || !s.users.HasUser(to)) {
 		return smtpError(550, 5, 1, 1, "Unknown local recipient")
 	}
-	if s.rcpts[to] {
+	// The local mailbox catalog and Maildir storage are case-insensitive.
+	// Keep the first SMTP address for traceability, but treat casing variants
+	// of a local recipient as one delivery. Remote addresses are untouched.
+	deliveryKey := to
+	if s.srv.domains.IsLocal(domain) {
+		deliveryKey = strings.ToLower(to)
+	}
+	if s.rcpts[deliveryKey] {
 		return nil
 	}
 	s.tx.Recipient = to
@@ -292,7 +299,7 @@ func (s *session) Rcpt(to string, opts *smtp.RcptOptions) error {
 		s.srv.logger.Info("message rejected at RCPT", "remote", s.tx.RemoteAddr, "from", s.tx.MailFrom, "to", to, "reason", res.Decision.Message)
 		return outcomeError(res.Decision)
 	}
-	s.rcpts[to] = true
+	s.rcpts[deliveryKey] = true
 	s.tx.RcptTo = append(s.tx.RcptTo, to)
 	return nil
 }
@@ -425,6 +432,7 @@ func (s *session) envelope() *queue.Envelope {
 		Helo:        s.tx.Helo,
 		RemoteIP:    "",
 		AuthUser:    s.tx.AuthUser,
+		SenderAuthorized: s.tx.AuthUser != "" && s.senderAuthorized(s.tx.MailFrom),
 		ServerName:  s.tx.ServerName,
 		Created:     time.Now(),
 		NextAttempt: time.Now(),

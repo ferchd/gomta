@@ -45,6 +45,7 @@ type maildirBackend struct {
 	hostname        string
 	mu              sync.Mutex // protects quotas, not all deliveries
 	quotas          map[string]*maildirQuota
+	mailboxLocks sync.Map // canonical Maildir directory -> *sync.Mutex
 	maxMailboxBytes int64
 	maxDomainBytes  int64
 }
@@ -78,6 +79,22 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 	}
 	domainPath := filepath.Join(b.root, safeComponent(domain))
 	box := filepath.Join(domainPath, safeComponent(local))
+	// Serialize only this mailbox: retries and concurrent deliveries of the
+	// same queue ID must not create two distinct message files.
+	lock, _ := b.mailboxLocks.LoadOrStore(box, &sync.Mutex{})
+	mailboxLock := lock.(*sync.Mutex)
+	mailboxLock.Lock()
+	defer mailboxLock.Unlock()
+	name := maildirMessageName(m.ID, domain, local)
+	if name != "" {
+		present, err := maildirHasMessage(box, name)
+		if err != nil {
+			return Temp(fmt.Errorf("check Maildir delivery identity: %w", err))
+		}
+		if present {
+			return nil
+		}
+	}
 	data := plugin.PrependHeaders(m.Data, []plugin.Header{
 		{Name: "Delivered-To", Value: rcpt},
 		{Name: "X-Original-To", Value: rcpt},
@@ -137,8 +154,12 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 	if host == "" {
 		host, _ = os.Hostname()
 	}
-	name := fmt.Sprintf("%d.%d.%s.%s", time.Now().UnixNano(), os.Getpid(), randomHex(6), safeComponent(host))
-	tmp := filepath.Join(box, "tmp", name)
+	if name == "" {
+		name = fmt.Sprintf("%d.%d.%s.%s", time.Now().UnixNano(), os.Getpid(), randomHex(6), safeComponent(host))
+	}
+	// The tmp name is unique, but the published new/ identity is deterministic
+	// for a queued message and its canonical local recipient.
+	tmp := filepath.Join(box, "tmp", name+"."+randomHex(6))
 	dst := filepath.Join(box, "new", name)
 	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
@@ -296,4 +317,35 @@ func (q *maildirQuota) reconcile(domainPath string) error {
 	q.mailboxes = mailboxes
 	q.lastScan = time.Now()
 	return nil
+}
+
+
+// maildirMessageName produces a stable, safe identity for queued messages.
+// Empty IDs (ad-hoc direct backend use) preserve one-file-per-call semantics.
+func maildirMessageName(id, domain, local string) string {
+	if id == "" {
+		return ""
+	}
+	hash := sha256.Sum256([]byte(id + "\x00" + strings.ToLower(domain) + "\x00" + strings.ToLower(local)))
+	return "gomta-" + hex.EncodeToString(hash[:])
+}
+
+// maildirHasMessage checks both unread new/ and already-read cur/ entries.
+// Mail readers conventionally append :2,<flags> when moving a file to cur/.
+func maildirHasMessage(box, name string) (bool, error) {
+	for _, folder := range []string{"new", "cur"} {
+		entries, err := os.ReadDir(filepath.Join(box, folder))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return false, err
+		}
+		for _, entry := range entries {
+			if entry.Name() == name || strings.HasPrefix(entry.Name(), name+":2,") {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }

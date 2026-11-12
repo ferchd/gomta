@@ -42,6 +42,7 @@ type Envelope struct {
 	Helo        string            `json:"helo,omitempty"`
 	RemoteIP    string            `json:"remote_ip,omitempty"`
 	AuthUser    string            `json:"auth_user,omitempty"`
+	SenderAuthorized bool        `json:"sender_authorized,omitempty"`
 	ServerName  string            `json:"server_name,omitempty"`
 	Meta        map[string]string `json:"meta,omitempty"`
 	Created     time.Time         `json:"created"`
@@ -667,7 +668,9 @@ func (m *Manager) sendFailureReports(env *Envelope) error {
 	if !m.cfg.SendDSN || env.From == "" || !plugin.ValidAddress(env.From, false) {
 		return nil
 	}
-	if !m.cfg.DSNInbound && !strings.EqualFold(env.AuthUser, env.From) {
+	// Alias senders are authorized during SMTP submission. Older queued
+	// messages lacking this bit remain eligible only when From == AuthUser.
+	if !m.cfg.DSNInbound && (env.AuthUser == "" || (!env.SenderAuthorized && !strings.EqualFold(env.AuthUser, env.From))) {
 		return nil
 	}
 	m.dsnMu.Lock()

@@ -278,3 +278,23 @@ func TestFailedRetentionPreservesActiveDSNMarker(t *testing.T) {
 		t.Fatalf("active DSN marker lost: %v", err)
 	}
 }
+
+func TestAuthorizedAliasMayReceiveFailureReport(t *testing.T) {
+	m, err := New(Config{Dir: t.TempDir(), SendDSN: true}, testRouter{})
+	if err != nil { t.Fatal(err) }
+	env := &Envelope{
+		ID: "alias-dsn", From: "billing@example.test",
+		AuthUser: "alice@example.test", SenderAuthorized: true,
+		ServerName: "mail.example.test",
+		Recipients: []Recipient{{Address:"missing@remote.test",Status:"failed",LastError:"550 no such user"}},
+	}
+	if err := m.sendFailureReports(env); err != nil { t.Fatal(err) }
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir,recipientDSNID(env.ID,"missing@remote.test")+".json")); err != nil { t.Fatal(err) }
+	// Forged authorization without an authenticated identity is never eligible.
+	env.ID = "unauthenticated-alias"
+	env.AuthUser = ""
+	if err := m.sendFailureReports(env); err != nil { t.Fatal(err) }
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir,recipientDSNID(env.ID,"missing@remote.test")+".json")); !os.IsNotExist(err) {
+		t.Fatalf("forged delegated sender produced DSN: %v",err)
+	}
+}
