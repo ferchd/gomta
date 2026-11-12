@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ferchd/gomta/internal/boundedio"
 	"github.com/ferchd/gomta/plugin"
 )
 
@@ -36,6 +37,9 @@ func init() {
 		}
 		if p.timeout <= 0 {
 			p.timeout = 30 * time.Second
+		}
+		if p.maxOutput <= 0 {
+			return nil, fmt.Errorf("max_output_bytes must be greater than zero")
 		}
 		p.acceptCodes = intList(opts, "accept_codes", []int{0})
 		p.tempfailCodes = intList(opts, "tempfail_codes", []int{75})
@@ -77,12 +81,16 @@ func (p *Plugin) Run(ctx context.Context, hook plugin.Hook, tx *plugin.Tx) (plug
 	cmd := exec.CommandContext(runCtx, p.command, p.args...)
 	cmd.Stdin = bytes.NewReader(tx.Data)
 	cmd.Env = append(os.Environ(), p.environment(hook, tx)...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
+	stdout := &boundedio.Capture{Max: p.maxOutput}
+	stderr := &boundedio.Truncate{Max: 64 << 10}
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 	cmd.WaitDelay = 5 * time.Second
 
 	err := cmd.Run()
+	if stdout.Exceeded() {
+		return p.failure(tx, "output", boundedio.ErrLimitExceeded)
+	}
 	if runCtx.Err() != nil {
 		return p.failure(tx, "timeout", runCtx.Err())
 	}
@@ -112,8 +120,8 @@ func (p *Plugin) success(tx *plugin.Tx, stdout []byte) (plugin.Outcome, error) {
 	if !p.replaceBody || len(stdout) == 0 {
 		return plugin.OK(), nil
 	}
-	if p.maxOutput > 0 && len(stdout) > p.maxOutput {
-		return p.failure(tx, "output", fmt.Errorf("output exceeds %d bytes", p.maxOutput))
+	if len(stdout) > p.maxOutput {
+		return p.failure(tx, "output", boundedio.ErrLimitExceeded)
 	}
 	return plugin.Outcome{Action: plugin.ActionContinue, Body: stdout}, nil
 }

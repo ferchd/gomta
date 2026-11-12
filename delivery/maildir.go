@@ -70,7 +70,9 @@ func (b *maildirBackend) Deliver(ctx context.Context, m *Message) map[string]err
 
 func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 	domain := plugin.Domain(rcpt)
-	local := plugin.LocalPart(rcpt)
+	// The configured user store treats local parts case-insensitively, so
+	// local Maildir paths must use the same canonical mailbox identity.
+	local := strings.ToLower(plugin.LocalPart(rcpt))
 	if domain == "" || local == "" {
 		return Perm(fmt.Errorf("invalid recipient %q", rcpt))
 	}

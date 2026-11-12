@@ -336,6 +336,9 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	res := s.srv.plugins.Run(context.Background(), plugin.HookData, s.tx)
+	if int64(len(s.tx.Data)) > max {
+		return smtpError(552, 5, 3, 4, "Message exceeds maximum size after content filtering")
+	}
 	switch res.Decision.Action {
 	case plugin.ActionReject, plugin.ActionTempFail:
 		s.srv.logger.Info("message rejected at DATA", "queue_id", s.tx.ID, "remote", s.tx.RemoteAddr, "from", s.tx.MailFrom, "reason", res.Decision.Message)
@@ -354,8 +357,14 @@ func (s *session) Data(r io.Reader) error {
 	}
 	s.tx.Data = plugin.PrependHeaders(s.tx.Data, []plugin.Header{receivedHeader(s.tx)})
 	s.tx.Size = int64(len(s.tx.Data))
+	if s.tx.Size > max {
+		return smtpError(552, 5, 3, 4, "Message exceeds maximum size after adding headers")
+	}
 
 	res = s.srv.plugins.Run(context.Background(), plugin.HookQueue, s.tx)
+	if int64(len(s.tx.Data)) > max {
+		return smtpError(552, 5, 3, 4, "Message exceeds maximum size after queue filtering")
+	}
 	switch res.Decision.Action {
 	case plugin.ActionReject, plugin.ActionTempFail:
 		s.srv.logger.Info("message rejected at queue", "queue_id", s.tx.ID, "from", s.tx.MailFrom, "reason", res.Decision.Message)
@@ -370,6 +379,9 @@ func (s *session) Data(r io.Reader) error {
 	if headers := s.tx.TakeHeaders(); len(headers) > 0 {
 		s.tx.Data = plugin.PrependHeaders(s.tx.Data, headers)
 		s.tx.Size = int64(len(s.tx.Data))
+	}
+	if s.tx.Size > max {
+		return smtpError(552, 5, 3, 4, "Message exceeds maximum size after queue headers")
 	}
 
 	env := s.envelope()
