@@ -48,3 +48,21 @@ jobs:
 
       - name: Validate example configuration
         run: /tmp/gomta check -config examples/minimal/gomta.yaml
+ 
+  windows:
+    name: Windows build and tests
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+      - name: Build
+        run: go build -trimpath -o gomta.exe ./cmd/gomta

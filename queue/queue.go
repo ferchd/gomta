@@ -358,6 +358,13 @@ func (m *Manager) process(ctx context.Context, env *Envelope) {
 			m.setResult(env, rcpt, err)
 			m.notifyDelivery(ctx, env, rcpt, err, msg)
 		}
+		// Commit each independently routed group before attempting another:
+		// this reduces duplicate delivery after interruption, while the SMTP
+		// transport remains fundamentally at-least-once.
+		if err := atomicWrite(jsonPath, mustJSON(env), 0o600); err != nil {
+			m.logger.Error("queue: persist recipient group outcomes failed", "id", env.ID, "error", err)
+			return
+		}
 	}
 
 	pending := env.Pending()

@@ -391,3 +391,40 @@ the authentication path itself accepts any bcrypt hash.
 - [Plugins and delivery backends](plugins.md)
 - [Deployment guide](deployment.md)
 - [Minimal example](../examples/minimal/)
+ 
+## Queue delivery guarantees and DSN
+
+The spool persists each payload before its envelope. Delivery is **at-least-once**:
+if the process crashes after the remote server accepts DATA but before the
+recipient outcome is saved, the message may be retried and duplicated. Remote
+receivers and webhook integrations should deduplicate using the GoMTA message ID.
+
+`queue.max_age` (default `120h`) bounds retries by elapsed age, while
+`queue.max_attempts` (default `100`) is an additional cap. A 4xx error
+is retried until one of these conditions is reached; permanent 5xx results
+fail immediately.
+
+`queue.send_dsn` enables multipart delivery-status notifications for failed
+authenticated submissions, using a null reverse-path to avoid loops.
+`queue.dsn_inbound` defaults to `false` to avoid backscatter from forged
+unauthenticated senders. Enabling inbound DSN requires a trusted sender policy.
+Notifications use stable queue IDs, but SMTP delivery remains at-least-once.
+
+## Resource limits
+
+`limits.max_data_memory_bytes` (default 128 MiB) reserves a shared
+budget before reading DATA into memory across all SMTP listeners. The value
+must exceed `limits.max_message_bytes`. Plugins can perform additional
+allocations, so the budget is not a total RSS cap. Connection limits also
+apply globally across all configured listeners.
+
+The Maildir backend accepts `max_mailbox_bytes` (default 512 MiB) and
+`max_domain_bytes` (default 5 GiB). Quota checks are synchronized inside
+one process, not across multiple instances writing to the same shared disk.
+Use an external mailbox backend with central quotas in clustered deployments.
+
+The rate-limit plugin accepts `scope: smart` (authenticated account or
+IP+sender for unauthenticated clients), `skip_authenticated: false` and
+`fail_closed: true`. Shared rate limits across nodes require Redis.
+SMTP AUTH also enforces per-IP failure windows across connections within
+a single GoMTA process.
