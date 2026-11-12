@@ -53,3 +53,6 @@ func (t *Truncate) Write(p []byte) (int, error) {
 	return n, nil
 }
 func (t *Truncate) String() string { return t.buf.String() }
+
+// Bytes returns the bounded stderr capture for diagnostics.
+func (t *Truncate) Bytes() []byte { return t.buf.Bytes() }
