@@ -469,3 +469,23 @@ GoMTA loads certificates at startup. Restart the service after renewal.
   Go runtime.
 - Use `authorized_senders` only for explicitly delegated addresses. Treat
   credentials and delegated identities as security-sensitive configuration.
+
+ 
+## Fourth audit: spool and resource operations
+
+- A GoMTA worker pool holds an advisory exclusive lock at
+  `<queue.dir>/.gomta-spool.lock`. A second GoMTA process using the same queue
+  fails startup rather than redelivering the same mail. Never delete this
+  lock file while another instance is using the spool.
+- The OS must support the file locking mechanism. Do not share a spool between
+  independently mounted hosts unless the underlying filesystem reliably
+  propagates locks; prefer one owner per spool.
+- `queue.orphan_grace: 24h` removes only aged `.eml` files without visible
+  envelopes and interrupted `.tmp-*` files. Failed-mail retention is
+  **disabled** until `queue.failed_retention` is explicitly set.
+- External `exec` filters have bounded stdout/stderr capture. Set
+  `max_output_bytes` to fit your maximum permissible transformed message.
+- An SMTP client cannot evade the default IP rate limit by rotating its
+  unauthenticated envelope sender.
+- The Maildir backend normalizes local mailbox paths to lowercase to match
+  the existing case-insensitive account catalog.

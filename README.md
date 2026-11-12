@@ -281,3 +281,13 @@ a webmail interface or a configuration API. Failure DSNs are supported for
 authenticated submission by default in newly generated configurations;
 inbound DSNs require explicit opt-in to avoid backscatter. Back up the queue and
 use a real mailbox backend (LMTP, Maildir, or HTTP) where durability matters.
+
+ 
+### Audit hardening notes
+
+GoMTA prevents two worker processes from operating the same local spool,
+supports conservative orphan cleanup and optional failed-message retention,
+bounds external filter output, and checks transformed message sizes before
+acceptance. These controls do not provide exactly-once SMTP delivery or a
+complete process-wide memory cap. Deploy with persistent storage, backups,
+controlled filtering processes and realistic queue-recovery tests.
