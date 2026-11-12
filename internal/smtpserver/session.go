@@ -574,7 +574,6 @@ func (s *session) senderAuthorized(address string) bool {
 	return false
 }
 
- 
 // guardAccountKey folds unambiguous short logins into the same account bucket
 // used by full-address authentication, without exposing whether it exists.
 func (s *session) guardAccountKey(username string) string {
@@ -586,10 +585,14 @@ func (s *session) guardAccountKey(username string) string {
 	for _, domain := range s.srv.domains.List() {
 		candidate := username + "@" + domain
 		if s.users.HasUser(candidate) {
-			if matched != "" { return username } // ambiguous; preserve original
+			if matched != "" {
+				return username
+			} // ambiguous; preserve original
 			matched = candidate
 		}
 	}
-	if matched != "" { return matched }
+	if matched != "" {
+		return matched
+	}
 	return username
 }

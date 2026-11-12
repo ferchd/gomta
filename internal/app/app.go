@@ -101,17 +101,17 @@ func LoadWithOptions(configPath string, opts LoadOptions) (*App, error) {
 		retry[i] = d.Std()
 	}
 	qm, err := queue.New(queue.Config{
-		Dir:         cfg.Queue.Dir,
-		Workers:     cfg.Queue.Workers,
-		MaxAttempts: cfg.Queue.MaxAttempts,
-		MaxAge:      cfg.Queue.MaxAge.Std(),
-		OrphanGrace: cfg.Queue.OrphanGrace.Std(),
+		Dir:             cfg.Queue.Dir,
+		Workers:         cfg.Queue.Workers,
+		MaxAttempts:     cfg.Queue.MaxAttempts,
+		MaxAge:          cfg.Queue.MaxAge.Std(),
+		OrphanGrace:     cfg.Queue.OrphanGrace.Std(),
 		FailedRetention: cfg.Queue.FailedRetention.Std(),
-		SendDSN:     cfg.Queue.SendDSN,
-		DSNInbound:  cfg.Queue.DSNInbound,
-		Plugins:     runner,
-		Retry:       retry,
-		Logger:      logger,
+		SendDSN:         cfg.Queue.SendDSN,
+		DSNInbound:      cfg.Queue.DSNInbound,
+		Plugins:         runner,
+		Retry:           retry,
+		Logger:          logger,
 	}, rt)
 	if err != nil {
 		return nil, err

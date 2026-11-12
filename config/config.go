@@ -126,15 +126,15 @@ type Routing struct {
 
 // Queue configures persistent retry delivery.
 type Queue struct {
-	Dir         string     `yaml:"dir"`
-	Workers     int        `yaml:"workers"`
-	MaxAttempts int        `yaml:"max_attempts"`
-	MaxAge      Duration   `yaml:"max_age"`
-	OrphanGrace Duration  `yaml:"orphan_grace"`
-	FailedRetention Duration `yaml:"failed_retention"`
-	SendDSN     bool       `yaml:"send_dsn"`
-	DSNInbound  bool       `yaml:"dsn_inbound"`
-	Retry       []Duration `yaml:"retry_schedule"`
+	Dir             string     `yaml:"dir"`
+	Workers         int        `yaml:"workers"`
+	MaxAttempts     int        `yaml:"max_attempts"`
+	MaxAge          Duration   `yaml:"max_age"`
+	OrphanGrace     Duration   `yaml:"orphan_grace"`
+	FailedRetention Duration   `yaml:"failed_retention"`
+	SendDSN         bool       `yaml:"send_dsn"`
+	DSNInbound      bool       `yaml:"dsn_inbound"`
+	Retry           []Duration `yaml:"retry_schedule"`
 }
 
 // Load reads, expands environment variables in, and validates a config file.
