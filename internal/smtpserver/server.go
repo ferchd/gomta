@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"sync/atomic"
 
 	"github.com/emersion/go-smtp"
 	"github.com/ferchd/gomta/config"
@@ -43,6 +44,10 @@ type Server struct {
 
 	addrMu   sync.Mutex
 	runtimes []*runtime
+	ready atomic.Bool
+	limits *connectionLimits
+	authGuard *authFailureGuard
+	memory *memoryBudget
 }
 
 type runtime struct {
@@ -73,6 +78,9 @@ func New(deps Deps) (*Server, error) {
 		queue:   deps.Queue,
 		logger:  logger,
 		relay:   relay,
+		limits: &connectionLimits{max: deps.Config.Limits.MaxConnections, maxPerIP: deps.Config.Limits.MaxConnectionsPerIP, counts: make(map[string]int)},
+		authGuard: newAuthFailureGuard(deps.Config.Limits.MaxAuthFailures),
+		memory: newMemoryBudget(deps.Config.Limits.MaxDataMemoryBytes),
 	}
 	needTLS := false
 	for _, l := range deps.Config.Listeners {
@@ -140,13 +148,7 @@ func (s *Server) Run(ctx context.Context) error {
 		s.addrMu.Lock()
 		rt.listener = ln
 		s.addrMu.Unlock()
-		ln = &limitListener{
-			Listener: ln,
-			max:      s.cfg.Limits.MaxConnections,
-			maxPerIP: s.cfg.Limits.MaxConnectionsPerIP,
-			logger:   s.logger,
-			counts:   make(map[string]int),
-		}
+		ln = &limitListener{Listener: ln, limits: s.limits, logger: s.logger}
 		if rt.cfg.TLS == "implicit" {
 			ln = tls.NewListener(ln, s.tls)
 		}
@@ -167,6 +169,8 @@ func (s *Server) Run(ctx context.Context) error {
 			}
 		}()
 	}
+	s.ready.Store(true)
+	defer s.ready.Store(false)
 	select {
 	case <-ctx.Done():
 		s.logger.Info("shutting down SMTP listeners")
@@ -244,3 +248,6 @@ func (l smtpLogger) Printf(format string, v ...any) {
 func (l smtpLogger) Println(v ...any) {
 	l.logger.Warn(strings.TrimSpace(fmt.Sprintln(v...)))
 }
+
+// Ready reports whether all listeners have successfully bound.
+func (s *Server) Ready() bool { return s.ready.Load() }

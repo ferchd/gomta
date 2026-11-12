@@ -12,12 +12,16 @@ import (
 // closed immediately.
 type limitListener struct {
 	net.Listener
-	max      int
-	maxPerIP int
-	logger   *slog.Logger
+	limits *connectionLimits
+	logger *slog.Logger
+}
 
-	mu     sync.Mutex
-	total  int
+// connectionLimits is shared across all configured SMTP listeners.
+type connectionLimits struct {
+	mu sync.Mutex
+	max int
+	maxPerIP int
+	total int
 	counts map[string]int
 }
 
@@ -28,23 +32,23 @@ func (l *limitListener) Accept() (net.Conn, error) {
 			return nil, err
 		}
 		ip := remoteIPString(conn.RemoteAddr())
-		l.mu.Lock()
-		over := (l.max > 0 && l.total >= l.max) || (l.maxPerIP > 0 && l.counts[ip] >= l.maxPerIP)
+		l.limits.mu.Lock()
+		over := (l.limits.max > 0 && l.limits.total >= l.limits.max) || (l.limits.maxPerIP > 0 && l.limits.counts[ip] >= l.limits.maxPerIP)
 		if over {
-			l.mu.Unlock()
-			_, _ = conn.Write([]byte("421 4.7.0 Too many connections, try again later\r\n"))
+			l.limits.mu.Unlock()
 			_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+			_, _ = conn.Write([]byte("421 4.7.0 Too many connections, try again later\r\n"))
 			_ = conn.Close()
 			continue
 		}
-		l.total++
-		l.counts[ip]++
-		l.mu.Unlock()
-		return &limitedConn{Conn: conn, release: func() { l.release(ip) }}, nil
+		l.limits.total++
+		l.limits.counts[ip]++
+		l.limits.mu.Unlock()
+		return &limitedConn{Conn: conn, release: func() { l.limits.release(ip) }}, nil
 	}
 }
 
-func (l *limitListener) release(ip string) {
+func (l *connectionLimits) release(ip string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.total--

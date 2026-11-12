@@ -79,6 +79,7 @@ type Log struct {
 // these.
 type Limits struct {
 	MaxMessageBytes         int64    `yaml:"max_message_bytes"`
+	MaxDataMemoryBytes      int64    `yaml:"max_data_memory_bytes"`
 	MaxRecipients           int      `yaml:"max_recipients"`
 	MaxConnections          int      `yaml:"max_connections"`
 	MaxConnectionsPerIP     int      `yaml:"max_connections_per_ip"`
@@ -185,6 +186,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Limits.MaxMessageBytes <= 0 {
 		c.Limits.MaxMessageBytes = 25 * 1024 * 1024
+	}
+	if c.Limits.MaxDataMemoryBytes <= 0 {
+		c.Limits.MaxDataMemoryBytes = 128 * 1024 * 1024
 	}
 	if c.Limits.MaxRecipients <= 0 {
 		c.Limits.MaxRecipients = 100
@@ -330,6 +334,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Limits.MaxMessageBytes < 1024 {
 		errs = append(errs, errors.New("limits.max_message_bytes must be at least 1024"))
+	}
+	if c.Limits.MaxDataMemoryBytes < c.Limits.MaxMessageBytes+1 {
+		errs = append(errs, errors.New("limits.max_data_memory_bytes must exceed limits.max_message_bytes"))
 	}
 	if c.Queue.Workers < 1 {
 		errs = append(errs, errors.New("queue.workers must be at least 1"))
