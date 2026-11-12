@@ -1,0 +1,58 @@
+name: gomta
+
+services:
+  gomta:
+    build:
+      context: .
+      args:
+        VERSION: ${GOMTA_VERSION:-dev}
+    image: ${GOMTA_IMAGE:-ferchd/gomta:latest}
+    restart: unless-stopped
+    hostname: ${GOMTA_HOSTNAME:-mail.example.com}
+    environment:
+      GOMTA_HOSTNAME: ${GOMTA_HOSTNAME:-mail.example.com}
+      GOMTA_DOMAINS: ${GOMTA_DOMAINS:-example.com}
+      GOMTA_ADMIN_USER: ${GOMTA_ADMIN_USER:-postmaster@example.com}
+      GOMTA_ADMIN_PASSWORD: ${GOMTA_ADMIN_PASSWORD:-changeme}
+      GOMTA_DKIM_SELECTOR: ${GOMTA_DKIM_SELECTOR:-default}
+      GOMTA_STATUS_ADDR: 0.0.0.0:8080
+      GOMTA_HEALTHCHECK_URL: http://127.0.0.1:8080/healthz
+    ports:
+      - "${GOMTA_SMTP_PORT:-2525}:2525"
+      - "${GOMTA_SUBMISSION_PORT:-5587}:5587"
+      - "127.0.0.1:${GOMTA_STATUS_PORT:-8080}:8080"
+    volumes:
+      - gomta-data:/var/lib/gomta
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O - http://127.0.0.1:8080/healthz >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 3s
+      start_period: 15s
+      retries: 3
+
+  # Optional shared state for rate limiting and greylisting.
+  # Enable the matching plugin in plugins.yaml and use redis://redis:6379/0.
+  redis:
+    image: redis:7-alpine
+    profiles: ["redis"]
+    restart: unless-stopped
+
+  # Optional spam filter. Enable the rspamd plugin and use
+  # url: http://rspamd:11333
+  rspamd:
+    image: rspamd/rspamd:latest
+    profiles: ["rspamd"]
+    restart: unless-stopped
+
+  # Optional antivirus scanner. Enable the clamav plugin and use
+  # address: clamav:3310
+  clamav:
+    image: clamav/clamav:stable
+    profiles: ["clamav"]
+    restart: unless-stopped
+    volumes:
+      - clamav-db:/var/lib/clamav
+
+volumes:
+  gomta-data:
+  clamav-db:

@@ -1,0 +1,25 @@
+# Binaries and test output
+/gomta
+/gomta.exe
+/dist/
+/coverage.out
+*.test
+*.log
+
+# Generated runtime configuration and state
+/gomta.yaml
+/plugins.yaml
+/domains.txt
+/users.txt
+/data/
+/mail/
+/tls/
+/dkim/
+
+# Local container overrides
+/.env
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/

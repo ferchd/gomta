@@ -1,0 +1,67 @@
+# Minimal GoMTA configuration.
+#
+# The ports below are unprivileged so this can run without root. For production
+# use :25 (mta), :587 (submission), and keep the filter listener on loopback.
+hostname: mail.example.com
+data_dir: data
+domains_file: domains.txt
+users_file: users.txt
+plugins_file: plugins.yaml
+
+log:
+  level: info
+  format: text
+
+limits:
+  max_message_bytes: 26214400
+  max_recipients: 100
+  max_connections: 200
+  max_connections_per_ip: 20
+  read_timeout: 5m
+  write_timeout: 5m
+  max_auth_failures: 5
+  validate_local_recipients: false
+
+tls:
+  cert_file: tls/cert.pem
+  key_file: tls/key.pem
+  min_version: "1.2"
+  # Generates a self-signed certificate on first use. Run `gomta init` or use
+  # real certificate paths in production.
+  auto_generate: true
+
+listeners:
+  - name: smtp
+    address: ":2525"
+    mode: mta
+    tls: starttls
+  - name: submission
+    address: ":5587"
+    mode: submission
+    tls: starttls
+    require_auth: true
+
+routing:
+  local_backend: maildir
+  local_options:
+    path: mail
+  outbound_backend: smtp
+  outbound_options:
+    tls: opportunistic
+    timeout: 2m
+
+relay_networks:
+  - 127.0.0.1/32
+  - ::1/128
+
+queue:
+  workers: 4
+  max_attempts: 6
+  retry_schedule:
+    - 1m
+    - 5m
+    - 15m
+    - 1h
+    - 6h
+
+status_addr: "127.0.0.1:8080"

@@ -1,0 +1,93 @@
+name: Bug report
+description: Report a reproducible problem with GoMTA
+title: "bug: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Do not include passwords, DKIM or TLS
+        private keys, tokens, or third-party message contents.
+
+        For security vulnerabilities, stop here and follow
+        [SECURITY.md](https://github.com/ferchd/gomta/blob/main/SECURITY.md)
+        instead of opening a public issue.
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: A clear description of the bug and its impact.
+      placeholder: GoMTA rejects valid mail from ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest configuration and commands that reproduce the problem.
+      placeholder: |
+        1. Configure listener ...
+        2. Send a message with ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: Paste the relevant `gomta.yaml` or `plugins.yaml` sections with secrets removed.
+      render: yaml
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant log output, redacted.
+      render: text
+    validations:
+      required: false
+  - type: input
+    id: version
+    attributes:
+      label: GoMTA version
+      description: Output of `gomta version`.
+      placeholder: gomta v0.1.0 (commit none)
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Operating system, architecture, and how GoMTA runs.
+      placeholder: Debian 13, amd64, systemd service; or Docker image ferchd/gomta:latest
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Listener mode
+      options:
+        - mta
+        - submission
+        - filter
+        - multiple modes
+        - not applicable
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmations
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: This report does not contain credentials, private keys, or third-party message contents.
+          required: true

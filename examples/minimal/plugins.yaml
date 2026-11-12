@@ -1,0 +1,94 @@
+# Minimal plugin pipeline.
+#
+# DKIM signing is intentionally omitted because it needs a private key. Run
+# `gomta init` to generate one, or add:
+#
+#   - name: dkim_sign
+#     priority: 200
+#     options:
+#       selector: default
+#       key_file: dkim/default.key
+#       sign_domains: [example.com]
+#       modes: [submission]
+#
+# Plugins for the same hook run concurrently. Ordered plugins run afterwards in
+# priority order.
+workers: 8
+timeout: 8s
+
+plugins:
+  - name: headers
+    priority: 100
+
+  - name: helo
+    priority: 5
+    options:
+      reject_invalid: true
+      reject_localhost: false
+      allow_ip_literals: true
+      min_labels: 2
+      skip_submission: true
+
+  - name: spf
+    priority: 10
+    options:
+      reject_fail: false
+      skip_authenticated: true
+      skip_submission: true
+
+  - name: dkim_verify
+    priority: 10
+    options:
+      max_verifications: 10
+      reject_fail: false
+
+  - name: dmarc
+    priority: 20
+    options:
+      enforce: none
+      tempfail_on_error: false
+      skip_authenticated: true
+      skip_submission: true
+
+  - name: rate_limit
+    priority: 30
+    options:
+      scope: ip+sender
+      limit: 200
+      window: 1h
+      action: tempfail
+      skip_authenticated: true
+
+  # Add these after installing the matching service.
+  - name: dnsbl
+    enabled: false
+    priority: 5
+    options:
+      zones: [zen.spamhaus.org]
+      reject_listed: true
+      skip_private: true
+
+  - name: greylist
+    enabled: false
+    priority: 40
+    options:
+      delay: 5m
+      pass_ttl: 36h
+      # redis_url: redis://127.0.0.1:6379/0
+
+  - name: rspamd
+    enabled: false
+    priority: 50
+    options:
+      url: http://127.0.0.1:11333
+      reject_action: false
+      skip_authenticated: true
+      tempfail_on_error: false
+
+  - name: clamav
+    enabled: false
+    priority: 60
+    options:
+      address: 127.0.0.1:3310
+      on_virus: reject
+      tempfail_on_error: false

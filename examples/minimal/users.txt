@@ -1,0 +1,6 @@
+# GoMTA users: username:bcrypt-hash
+#
+# The hash below is for the password "changeme". Replace it before using this
+# example anywhere except local testing. `gomta init` generates a complete file
+# with a stronger password.
+postmaster@example.com:$2a$12$dBNYkRtWGME51uKZsdQi6eifexi0O9H1zSNfJc0/sRQcWM2bGmIMK

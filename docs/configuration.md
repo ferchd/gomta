@@ -1,0 +1,393 @@
+# Configuration reference
+
+GoMTA reads a single YAML file (usually `gomta.yaml`) plus three policy files:
+
+```text
+gomta.yaml       server configuration
+plugins.yaml     plugin pipeline
+domains.txt      domains accepted for local delivery
+users.txt        submission credentials
+```
+
+All paths in `gomta.yaml` are resolved relative to the directory containing the
+configuration file. `~` is **not** expanded by the configuration loader, but
+plugin paths may use `~/` where documented.
+
+The loader is strict: unknown YAML fields are rejected, so typos fail at
+startup instead of being silently ignored. Run `gomta check -config gomta.yaml`
+after every change.
+
+## Environment variable expansion
+
+`gomta.yaml` and `plugins.yaml` are passed through `os.ExpandEnv` before YAML
+parsing. Both `${VAR}` and `$VAR` work:
+
+```yaml
+status_addr: "${GOMTA_STATUS_ADDR}"
+
+plugins:
+  - name: rspamd
+    options:
+      password: ${RSPAMD_PASSWORD}
+```
+
+Missing variables expand to an empty string. `domains.txt` and `users.txt` are
+plain text and are **not** expanded.
+
+## Top-level fields
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `hostname` | OS hostname | SMTP banner, EHLO name, Received header name, and default TLS/DKIM identity. |
+| `data_dir` | `data` | Root for runtime data. The queue defaults to `<data_dir>/queue` and quarantine to `<data_dir>/quarantine`. |
+| `domains_file` | `domains.txt` | Domains accepted for local delivery. |
+| `users_file` | `users.txt` | Submission credentials. |
+| `plugins_file` | `plugins.yaml` | Plugin pipeline configuration. |
+| `status_addr` | `""` (disabled) | Address for `/healthz`, `/readyz`, and `/stats`. `gomta init` sets `127.0.0.1:8080`. |
+| `relay_networks` | loopback | IPs/CIDRs allowed to relay without authenticating. |
+| `log` | info/text | Structured logging. |
+| `limits` | see below | Connection, message, and timeout limits. |
+| `tls` | see below | Certificate and TLS policy. |
+| `listeners` | `:25` + `:587` | SMTP endpoints. |
+| `routing` | Maildir + SMTP | Delivery backend selection. |
+| `queue` | see below | Persistent retry settings. |
+
+Minimal configuration:
+
+```yaml
+hostname: mail.example.com
+data_dir: data
+domains_file: domains.txt
+users_file: users.txt
+plugins_file: plugins.yaml
+
+listeners:
+  - name: smtp
+    address: ":25"
+    mode: mta
+    tls: starttls
+  - name: submission
+    address: ":587"
+    mode: submission
+    tls: starttls
+    require_auth: true
+
+routing:
+  local_backend: maildir
+  local_options:
+    path: mail
+  outbound_backend: smtp
+  outbound_options:
+    tls: opportunistic
+
+status_addr: "127.0.0.1:8080"
+```
+
+## Logging
+
+```yaml
+log:
+  level: info     # debug, info, warn, error
+  format: text    # text or json
+```
+
+Logs are written to standard error. Use `format: json` when shipping logs to a
+collector. `gomta serve -log-level debug` overrides the configured level
+without changing the file.
+
+## Limits
+
+```yaml
+limits:
+  max_message_bytes: 26214400       # 25 MiB
+  max_recipients: 100
+  max_connections: 200
+  max_connections_per_ip: 20
+  max_line_length: 4096
+  read_timeout: 5m
+  write_timeout: 5m
+  idle_timeout: 5m
+  max_auth_failures: 5
+  validate_local_recipients: false
+```
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `max_message_bytes` | `26214400` | Maximum DATA size. Larger messages receive `552`. |
+| `max_recipients` | `100` | Maximum RCPT commands per transaction. |
+| `max_connections` | `200` | Global concurrent connection limit. |
+| `max_connections_per_ip` | `20` | Per-client-IP connection limit. |
+| `max_line_length` | `4096` | Maximum SMTP command line length. |
+| `read_timeout` | `5m` | Read deadline. Also acts as the idle timeout between commands. |
+| `write_timeout` | `5m` | Write deadline. |
+| `idle_timeout` | `5m` | Accepted for forward compatibility; the current server uses `read_timeout` as its idle deadline. |
+| `max_auth_failures` | `5` | Failed AUTH attempts before the session can no longer authenticate. |
+| `validate_local_recipients` | `false` | When true and `users.txt` is non-empty, RCPT for a local domain is accepted only if the address exists in `users.txt`. Leave false when a downstream mailbox server owns the user list. |
+
+`max_message_bytes` and `max_recipients` can be overridden per listener.
+
+AUTH is only advertised over TLS. For development on a loopback address you can
+set `allow_insecure_auth: true` on the listener to permit plaintext AUTH. The
+`require_tls_for_auth` field exists in the schema but TLS is currently always
+required unless that listener opt-in is present.
+
+## TLS
+
+```yaml
+tls:
+  cert_file: tls/cert.pem
+  key_file: tls/key.pem
+  min_version: "1.2"   # "1.2" or "1.3"
+  auto_generate: false
+```
+
+If any listener uses `tls: starttls` or `tls: implicit`, the certificate and key
+must exist. Set `auto_generate: true` to create a one-year self-signed ECDSA
+certificate for `localhost`, the configured hostname, and loopback addresses.
+`gomta init` generates a self-signed certificate and sets
+`auto_generate: false`; replace it with a real certificate in production.
+
+Certificate files are loaded at startup, so a failed renewal requires a process
+restart (or a supervisor restart after renewal).
+
+## Listeners
+
+```yaml
+listeners:
+  - name: smtp
+    address: ":25"
+    mode: mta
+    tls: starttls
+    max_message_bytes: 26214400
+    max_recipients: 100
+
+  - name: submission
+    address: ":587"
+    mode: submission
+    tls: starttls
+    require_auth: true
+
+  - name: filter
+    address: "127.0.0.1:10025"
+    mode: filter
+    tls: none
+```
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `name` | `listener-N` | Unique listener name used in logs and status output. |
+| `address` | required | `host:port`. Use `:25`, `127.0.0.1:10025`, or `[::1]:2525`. |
+| `mode` | `mta` | `mta`, `submission`, or `filter`. |
+| `tls` | `starttls` | `starttls`, `implicit`, or `none`. |
+| `require_auth` | forced for submission | Reject MAIL/RCPT until the client authenticates. |
+| `allow_insecure_auth` | `false` | Permit AUTH without TLS. Only allowed on loopback addresses. |
+| `max_message_bytes` | global limit | Per-listener DATA limit. |
+| `max_recipients` | global limit | Per-listener recipient limit. |
+| `banner` | unused | Accepted but not currently used by the SMTP backend. |
+
+`implicit` means TLS from the first byte (typically port 465). `starttls` starts
+in plaintext and upgrades on the client's request. `none` is intended for
+loopback filter links.
+
+### Listener modes
+
+**`mta` — inbound mail exchanger**
+
+- Accepts recipients in `domains.txt`.
+- Relays to non-local domains only for authenticated users or clients in
+  `relay_networks`.
+- Runs the full inbound plugin pipeline.
+- Use `:25` in production.
+
+**`submission` — authenticated user submission**
+
+- `require_auth` is forced to true.
+- All MAIL/RCPT commands require AUTH.
+- Accepts local and remote recipients.
+- Useful for outbound mail from applications and users.
+- Use `:587` (STARTTLS) or `:465` (implicit TLS) in production.
+
+**`filter` — filtering MTA**
+
+- Accepts only recipients in `domains.txt`; relaying is denied.
+- Local recipients are delivered through `routing.filter_upstream` when it is
+  configured, otherwise through the normal local backend.
+- Usually listens on loopback with `tls: none` and receives mail from a front
+  MTA such as Postfix.
+- Non-local recipients are rejected with `550 5.7.1 Relaying denied`.
+
+A single process can run any combination of listeners.
+
+## Relay policy
+
+```yaml
+relay_networks:
+  - 127.0.0.1/32
+  - ::1/128
+  - 10.0.0.0/8
+```
+
+Clients whose remote IP matches this list may relay to non-local domains without
+authenticating on `mta` listeners. Submission listeners still require AUTH.
+Keep this list as small as possible. An empty list is replaced with the loopback
+defaults.
+
+## Routing and delivery
+
+```yaml
+routing:
+  local_backend: maildir
+  local_options:
+    path: mail
+
+  outbound_backend: smtp
+  outbound_options:
+    tls: opportunistic
+    timeout: 2m
+
+  # Optional downstream for `filter` mode:
+  filter_upstream: "lmtp://127.0.0.1:24"
+  filter_options: {}
+```
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `local_backend` | `maildir` | Backend for recipients in local domains. |
+| `local_options` | `{path: mail}` for Maildir | Backend-specific options. |
+| `outbound_backend` | `smtp` | Backend for non-local recipients. |
+| `outbound_options` | `{}` | Backend-specific options. |
+| `filter_upstream` | empty | URL for filter-mode local delivery. |
+| `filter_options` | `{}` | Extra options merged into the filter backend. |
+
+`filter_upstream` accepts:
+
+```text
+smtp://host:25
+smtps://user:password@host:465
+lmtp://127.0.0.1:24
+http://127.0.0.1:8081/deliver
+https://example.net/inbound
+```
+
+For `smtp` URLs a missing port defaults to 25, for `smtps` to 465, and for
+`lmtp` to 24. HTTP(S) endpoints receive a JSON envelope with the message
+base64-encoded. See [plugins.md](plugins.md#delivery-backends) for every backend
+option.
+
+The local backend also receives local mail on `mta` and `submission` listeners.
+With the default Maildir backend, messages are stored under:
+
+```text
+<path>/<domain>/<local-part>/new/
+```
+
+## Queue
+
+```yaml
+queue:
+  dir: data/queue
+  workers: 4
+  max_attempts: 6
+  retry_schedule:
+    - 1m
+    - 5m
+    - 15m
+    - 1h
+    - 6h
+```
+
+| Field | Default | Description |
+| --- | --- | --- |
+| `dir` | `<data_dir>/queue` | Spool directory. Created lazily. |
+| `workers` | `4` | Concurrent delivery workers. |
+| `max_attempts` | `6` | Attempts before a recipient is marked permanently failed. |
+| `retry_schedule` | 1m, 5m, 15m, 1h, 6h | Delay between attempts. The last value is reused if attempts exceed the list. |
+
+The spool contains one `<id>.json` envelope and one `<id>.eml` message per
+queued item. When every recipient is delivered the files are removed. If a
+recipient permanently fails after retries, the message is retained in
+`<queue>/failed/` with its envelope. Messages quarantined by plugins are written
+to `<data_dir>/quarantine/`.
+
+A 4xx delivery result is retried. A 5xx result is permanent. No bounce/DSN is
+generated automatically; monitor the failed directory or the stats endpoint.
+
+## Status server
+
+```yaml
+status_addr: "127.0.0.1:8080"
+```
+
+Endpoints:
+
+| Path | Response |
+| --- | --- |
+| `/healthz` | `200 ok` once the process is running. |
+| `/readyz` | `200 ready` once the process is running. |
+| `/stats` | JSON snapshot with hostname, uptime, listeners, domains, backend names, plugin entries, queue counts, user count, and plugin worker count. |
+
+`gomta status -config gomta.yaml` prints the same snapshot without starting a
+server. `gomta status -json=false` prints a short human-readable summary. Set
+`status_addr: ""` to disable the HTTP server entirely.
+
+## `domains.txt`
+
+One domain per line. Blank lines and `#` comments are ignored. Domains are
+lowercased and must be valid.
+
+```text
+# Domains accepted for local delivery.
+example.com
+example.org
+```
+
+Only these domains are treated as local. Everything else is outbound (or denied
+on a filter listener).
+
+## `users.txt`
+
+One credential per line:
+
+```text
+user@example.com:$2a$12$...
+```
+
+- Bcrypt hashes are recommended. `gomta init` writes one.
+- `plain:password` is accepted for development only.
+- Usernames are case-insensitive.
+- Short login names are accepted when they are unambiguous: `postmaster` is
+  tried as `postmaster@<each-local-domain>`.
+- The file is read at startup; restart after editing.
+
+To create a bcrypt hash with common tools:
+
+```sh
+# Apache htpasswd
+htpasswd -bnBC 12 "" 'your-password' | tr -d ':\n'
+
+# Or let GoMTA generate a complete instance and copy its format:
+gomta init -domain example.com -hostname mail.example.com
+```
+
+Passwords must be at least 8 characters when generated through GoMTA's helper;
+the authentication path itself accepts any bcrypt hash.
+
+## Validation rules
+
+`gomta check` fails when:
+
+- A required field is missing or a duration/integer cannot be parsed.
+- An unknown YAML field is present.
+- A listener uses an invalid mode or TLS value.
+- Two listeners share a name or a non-`0` address.
+- `allow_insecure_auth` is set on a non-loopback listener.
+- A relay network is not a valid IP or CIDR.
+- A TLS certificate is required but missing and `auto_generate` is false.
+- A plugin or delivery backend name is unknown or its options are invalid.
+- A local Maildir path cannot be created.
+
+## See also
+
+- [Plugins and delivery backends](plugins.md)
+- [Deployment guide](deployment.md)
+- [Minimal example](../examples/minimal/)

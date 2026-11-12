@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/ferchd/gomta/security/advisories/new
+    about: Report security issues privately. Do not open a public issue.
+  - name: Documentation
+    url: https://github.com/ferchd/gomta/tree/main/docs
+    about: Configuration, plugins, and deployment guides.
+  - name: Questions and help
+    url: https://github.com/ferchd/gomta/discussions
+    about: Ask usage questions and share configurations.
