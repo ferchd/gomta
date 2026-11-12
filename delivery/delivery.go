@@ -17,6 +17,7 @@ import (
 // Message is the delivery unit handed to a backend.
 type Message struct {
 	ID       string
+	Attempt  int // persisted queue delivery attempt; 1 means first attempt
 	From     string
 	To       []string
 	Data     []byte
