@@ -1,6 +1,7 @@
 package delivery
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -73,17 +74,18 @@ func TestMaildirCanonicalizesCaseInsensitiveMailbox(t *testing.T) {
 func TestMaildirConcurrentDeliveriesShareQuota(t *testing.T) {
 	root := t.TempDir()
 	b := &maildirBackend{root: root, maxMailboxBytes: 1 << 20, maxDomainBytes: 1 << 21, quotas: make(map[string]*maildirQuota)}
-	msg := &Message{ID: "parallel", Data: []byte("From: test@example.test\r\n\r\ncontent\r\n")}
+	data := []byte("From: test@example.test\r\n\r\ncontent\r\n")
 	const count = 30
 	var wg sync.WaitGroup
 	for i := 0; i < count; i++ {
 		wg.Add(1)
-		go func() {
+		go func(i int) {
 			defer wg.Done()
+			msg := &Message{ID: fmt.Sprintf("parallel-%d", i), Data: data}
 			if err := b.deliverOne("alice@example.test", msg); err != nil {
 				t.Errorf("delivery: %v", err)
 			}
-		}()
+		}(i)
 	}
 	wg.Wait()
 	items, err := os.ReadDir(filepath.Join(root, "example.test", "alice", "new"))
