@@ -559,8 +559,7 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	if err := os.Rename(tmpName, path); err != nil {
-		// Never discard the old copy when replacement fails.
+	if err := atomicReplace(tmpName, path); err != nil {
 		return err
 	}
 	if runtime.GOOS != "windows" {
