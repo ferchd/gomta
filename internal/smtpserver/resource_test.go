@@ -53,15 +53,25 @@ func TestAuthGuardReservesConcurrentAttemptsAndBoundsKeys(t *testing.T) {
 	}
 	g2 := newAuthFailureGuard(1)
 	g2.capacity = 2
-	if !g2.begin("127.0.0.1:1", "first@example.test") { t.Fatal("first attempt failed") }
-	if g2.begin("127.0.0.2:2", "second@example.test") { t.Fatal("guard exceeded key capacity") }
-	if len(g2.attempts) > g2.capacity { t.Fatal("guard map grew past capacity") }
+	if !g2.begin("127.0.0.1:1", "first@example.test") {
+		t.Fatal("first attempt failed")
+	}
+	if g2.begin("127.0.0.2:2", "second@example.test") {
+		t.Fatal("guard exceeded key capacity")
+	}
+	if len(g2.attempts) > g2.capacity {
+		t.Fatal("guard map grew past capacity")
+	}
 }
 
 func TestAuthGuardAccountLimitAcrossIPs(t *testing.T) {
 	g := newAuthFailureGuard(1)
-	for i:=0; i<g.max*2; i++ {
-		if !g.begin(fmt.Sprintf("192.0.2.%d:1234", i), "target@example.test") { t.Fatalf("account blocked prematurely at %d",i) }
+	for i := 0; i < g.max*2; i++ {
+		if !g.begin(fmt.Sprintf("192.0.2.%d:1234", i), "target@example.test") {
+			t.Fatalf("account blocked prematurely at %d", i)
+		}
 	}
-	if g.begin("203.0.113.1:1234", "target@example.test") { t.Fatal("account limit bypassed with another IP") }
+	if g.begin("203.0.113.1:1234", "target@example.test") {
+		t.Fatal("account limit bypassed with another IP")
+	}
 }

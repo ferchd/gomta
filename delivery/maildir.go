@@ -52,10 +52,10 @@ type maildirBackend struct {
 // maildirQuota is scoped to one domain, so different domains can deliver
 // concurrently without rescanning the entire tree on every message.
 type maildirQuota struct {
-	mu sync.Mutex
-	used int64
+	mu        sync.Mutex
+	used      int64
 	mailboxes map[string]int64
-	lastScan time.Time
+	lastScan  time.Time
 }
 
 func (b *maildirBackend) Name() string { return "maildir" }

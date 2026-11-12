@@ -7,9 +7,9 @@ import (
 	"net"
 	"net/textproto"
 	"reflect"
-	"sync"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -26,11 +26,11 @@ type Definition struct {
 
 // RunnerConfig configures hook fan-out.
 type RunnerConfig struct {
-	Workers int
-	Timeout time.Duration
+	Workers          int
+	Timeout          time.Duration
 	MaxSnapshotBytes int64
-	BaseDir string
-	Logger  *slog.Logger
+	BaseDir          string
+	Logger           *slog.Logger
 }
 
 // PluginResult records one plugin invocation.
@@ -84,15 +84,15 @@ type entry struct {
 
 // Runner constructs plugins and executes their hooks concurrently.
 type Runner struct {
-	logger  *slog.Logger
-	workers int
-	timeout time.Duration
-	sem     chan struct{}
-	snapMu sync.Mutex
-	snapUsed int64
+	logger    *slog.Logger
+	workers   int
+	timeout   time.Duration
+	sem       chan struct{}
+	snapMu    sync.Mutex
+	snapUsed  int64
 	snapLimit int64
-	snapWake chan struct{}
-	hooks   map[Hook][]entry
+	snapWake  chan struct{}
+	hooks     map[Hook][]entry
 }
 
 // NewRunner builds all configured plugins. Any unknown plugin or invalid
@@ -109,13 +109,13 @@ func NewRunner(defs []Definition, cfg RunnerConfig) (*Runner, error) {
 		cfg.Timeout = 10 * time.Second
 	}
 	r := &Runner{
-		logger:  logger,
-		workers: cfg.Workers,
-		timeout: cfg.Timeout,
-		sem:     make(chan struct{}, cfg.Workers),
+		logger:    logger,
+		workers:   cfg.Workers,
+		timeout:   cfg.Timeout,
+		sem:       make(chan struct{}, cfg.Workers),
 		snapLimit: cfg.MaxSnapshotBytes,
-		snapWake: make(chan struct{}),
-		hooks:   make(map[Hook][]entry),
+		snapWake:  make(chan struct{}),
+		hooks:     make(map[Hook][]entry),
 	}
 	bc := BuildContext{BaseDir: cfg.BaseDir, Logger: logger}
 
@@ -499,12 +499,15 @@ func (r *Runner) Workers() int { return r.workers }
 // Timeout returns the overall per-hook timeout.
 func (r *Runner) Timeout() time.Duration { return r.timeout }
 
- 
 // reserveSnapshot bounds private DATA copies independently from SMTP DATA
 // allocations. Zero means unlimited for externally constructed test runners.
 func (r *Runner) reserveSnapshot(ctx context.Context, size int64) error {
-	if size == 0 || r.snapLimit <= 0 { return nil }
-	if size > r.snapLimit { return fmt.Errorf("plugin snapshot exceeds memory budget") }
+	if size == 0 || r.snapLimit <= 0 {
+		return nil
+	}
+	if size > r.snapLimit {
+		return fmt.Errorf("plugin snapshot exceeds memory budget")
+	}
 	for {
 		r.snapMu.Lock()
 		if r.snapUsed+size <= r.snapLimit {
@@ -516,13 +519,16 @@ func (r *Runner) reserveSnapshot(ctx context.Context, size int64) error {
 		r.snapMu.Unlock()
 		select {
 		case <-wake:
-		case <-ctx.Done(): return ctx.Err()
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 	}
 }
 
 func (r *Runner) releaseSnapshot(size int64) {
-	if size == 0 || r.snapLimit <= 0 { return }
+	if size == 0 || r.snapLimit <= 0 {
+		return
+	}
 	r.snapMu.Lock()
 	r.snapUsed -= size
 	close(r.snapWake)
@@ -536,21 +542,33 @@ func cloneMetadata(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
 		copy := make(map[string]any, len(x))
-		for k, value := range x { copy[k] = cloneMetadata(value) }
+		for k, value := range x {
+			copy[k] = cloneMetadata(value)
+		}
 		return copy
 	case map[string]string:
 		copy := make(map[string]string, len(x))
-		for k, value := range x { copy[k] = value }
+		for k, value := range x {
+			copy[k] = value
+		}
 		return copy
 	case []any:
 		copy := make([]any, len(x))
-		for i, value := range x { copy[i] = cloneMetadata(value) }
+		for i, value := range x {
+			copy[i] = cloneMetadata(value)
+		}
 		return copy
-	case []string: return append([]string(nil), x...)
-	case []byte: return append([]byte(nil), x...)
-	case []int: return append([]int(nil), x...)
-	case []bool: return append([]bool(nil), x...)
-	case []float64: return append([]float64(nil), x...)
-	default: return v
+	case []string:
+		return append([]string(nil), x...)
+	case []byte:
+		return append([]byte(nil), x...)
+	case []int:
+		return append([]int(nil), x...)
+	case []bool:
+		return append([]bool(nil), x...)
+	case []float64:
+		return append([]float64(nil), x...)
+	default:
+		return v
 	}
 }

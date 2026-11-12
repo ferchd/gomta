@@ -48,19 +48,19 @@ func (d Duration) MarshalYAML() (any, error) { return time.Duration(d).String(),
 
 // Config is the root gomta.yaml document.
 type Config struct {
-	Hostname    string     `yaml:"hostname"`
-	DataDir     string     `yaml:"data_dir"`
-	DomainsFile string     `yaml:"domains_file"`
-	UsersFile   string     `yaml:"users_file"`
-	PluginsFile string     `yaml:"plugins_file"`
-	Log         Log        `yaml:"log"`
-	Limits      Limits     `yaml:"limits"`
-	TLS         TLS        `yaml:"tls"`
-	Listeners   []Listener `yaml:"listeners"`
-	Routing     Routing    `yaml:"routing"`
-	RelayNets   []string   `yaml:"relay_networks"`
-	Queue       Queue      `yaml:"queue"`
-	StatusAddr  string     `yaml:"status_addr"`
+	Hostname          string              `yaml:"hostname"`
+	DataDir           string              `yaml:"data_dir"`
+	DomainsFile       string              `yaml:"domains_file"`
+	UsersFile         string              `yaml:"users_file"`
+	PluginsFile       string              `yaml:"plugins_file"`
+	Log               Log                 `yaml:"log"`
+	Limits            Limits              `yaml:"limits"`
+	TLS               TLS                 `yaml:"tls"`
+	Listeners         []Listener          `yaml:"listeners"`
+	Routing           Routing             `yaml:"routing"`
+	RelayNets         []string            `yaml:"relay_networks"`
+	Queue             Queue               `yaml:"queue"`
+	StatusAddr        string              `yaml:"status_addr"`
 	AuthorizedSenders map[string][]string `yaml:"authorized_senders"`
 
 	// BaseDir is the directory containing the config file. Relative paths are
