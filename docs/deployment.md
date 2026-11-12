@@ -456,3 +456,16 @@ write to it.
 **Certificate renewal did not take effect**
 
 GoMTA loads certificates at startup. Restart the service after renewal.
+ 
+## Post-audit operational notes
+
+- The local Maildir cache avoids rescanning every message, but quota counters
+  are process-local. Do not operate multiple writers over shared mail storage.
+- DSNs for authenticated submissions are generated per failed recipient and
+  published before the source envelope is removed. Keep the spool and failed/
+  markers on durable storage and back them up together.
+- The SMTP DATA and plugin snapshot budgets are independent reservations;
+  size container memory to account for both, delivery worker buffers and the
+  Go runtime.
+- Use `authorized_senders` only for explicitly delegated addresses. Treat
+  credentials and delegated identities as security-sensitive configuration.

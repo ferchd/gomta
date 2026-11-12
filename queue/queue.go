@@ -368,12 +368,14 @@ func (m *Manager) process(ctx context.Context, env *Envelope) {
 			RemoteIP: env.RemoteIP,
 		}
 		results := g.route.Backend.Deliver(ctx, msgObj)
+		reported := make(map[string]error, len(g.rcpts))
 		for _, rcpt := range g.rcpts {
 			err, ok := results[rcpt]
 			if !ok {
 				err = delivery.Temp(errors.New("delivery backend returned no result"))
 			}
 			m.setResult(env, rcpt, err)
+			reported[rcpt] = err
 		}
 		// Commit each independently routed group before attempting another:
 		// this reduces duplicate delivery after interruption, while the SMTP
@@ -384,7 +386,7 @@ func (m *Manager) process(ctx context.Context, env *Envelope) {
 		}
 		// Observational hooks execute only after all outcomes are durable.
 		for _, rcpt := range g.rcpts {
-			m.notifyDelivery(ctx, env, rcpt, results[rcpt], msg)
+			m.notifyDelivery(ctx, env, rcpt, reported[rcpt], msg)
 		}
 		if err := m.sendFailureReports(env); err != nil {
 			m.logger.Error("queue: DSN publication deferred", "id", env.ID, "error", err)

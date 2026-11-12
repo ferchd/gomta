@@ -428,3 +428,40 @@ IP+sender for unauthenticated clients), `skip_authenticated: false` and
 `fail_closed: true`. Shared rate limits across nodes require Redis.
 SMTP AUTH also enforces per-IP failure windows across connections within
 a single GoMTA process.
+
+ 
+## Audit follow-up: identity, quotas and plugin memory
+
+`authorized_senders` is a top-level map from authenticated mailbox to explicit
+aliases that the account may use in SMTP `MAIL FROM` and the message `From`
+header. No wildcard or implicit domain delegation is permitted:
+
+```yaml
+authorized_senders:
+  alice@example.com:
+    - billing@example.com
+    - support@example.com
+```
+
+`validate_local_recipients: true` rejects unknown recipients **including when
+users.txt is empty**. For a deliberate catch-all configuration, set this flag
+to false and supply an appropriate storage policy.
+
+Maildir quotas cache domain and mailbox bytes, reconciling on first delivery,
+every five minutes, and when a limit would otherwise be exceeded. Writers
+outside this GoMTA instance can temporarily make counters stale; shared
+mailboxes require centralized quotas for strict enforcement.
+
+The memory budget now also caps aggregate plugin DATA snapshot allocations.
+It is separate from SMTP DATA reservations and does not claim to bound Go's
+total RSS or allocations inside third-party plugins.
+
+SMTP AUTH uses a per-process atomic in-flight and failed-attempt budget by
+IP and presented username. All state expires after a fixed window and the
+number of tracked identities is bounded. Multi-instance deployment requires
+a shared counter store for cluster-wide enforcement.
+
+Queue recipients are journaled before observational delivery hooks. Delivery
+status notifications are tracked per failed recipient and can be reconstructed
+from the persistent queue if a notification publication was interrupted.
+The transport remains at-least-once, including DSNs.
