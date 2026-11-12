@@ -489,3 +489,19 @@ GoMTA loads certificates at startup. Restart the service after renewal.
   unauthenticated envelope sender.
 - The Maildir backend normalizes local mailbox paths to lowercase to match
   the existing case-insensitive account catalog.
+
+
+## Fifth-audit recovery procedures
+
+- Inspect `queue/corrupt/*.json` and paired `.reason` files for missing
+  message bodies. Malformed envelope originals use the `.envelope` suffix.
+  Restore from backups or handle these records with an explicit operator
+  decision; do not automatically generate a message from missing content.
+- Maildir retries use a stable identifier for the queued message and local
+  mailbox. Historic Maildir directories with differing local-part case are
+  not automatically merged. Back up and reconcile them before migration,
+  checking for name collisions and preserving original messages.
+- Keep an exclusive spool owner. SMTP listener startup now depends on
+  successful ownership and an initial durable spool readiness check.
+- Real recovery guarantees require failure-injection tests and live SMTP
+  interoperability checks in addition to the unit test matrix.

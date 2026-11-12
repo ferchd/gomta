@@ -92,6 +92,7 @@ type Config struct {
 	MaxAge          time.Duration
 	OrphanGrace     time.Duration
 	FailedRetention time.Duration
+	QuarantineDir   string
 	SendDSN         bool
 	DSNInbound      bool
 	Plugins         *plugin.Runner
@@ -225,18 +226,28 @@ func (m *Manager) Start(ctx context.Context) error {
 	defer ticker.Stop()
 	maintenance := time.NewTicker(time.Hour)
 	defer maintenance.Stop()
+	// Expensive durability probes run periodically, not on every 2-second
+	// queue scan. A failed probe keeps readiness false until the next probe.
+	probe := time.NewTicker(30*time.Second)
+	defer probe.Stop()
 	healthy := m.scan(ctx)
 	m.cleanupSpool(time.Now())
-	m.ready.Store(healthy && m.spoolWritable())
+	writable := m.spoolWritable()
+	m.ready.Store(healthy && writable)
 	for {
 		select {
 		case <-ctx.Done():
 			m.wg.Wait()
 			return nil
 		case <-ticker.C:
-			m.ready.Store(m.scan(ctx) && m.spoolWritable())
+			healthy = m.scan(ctx)
+			m.ready.Store(healthy && writable)
 		case <-m.wake:
-			m.ready.Store(m.scan(ctx) && m.spoolWritable())
+			healthy = m.scan(ctx)
+			m.ready.Store(healthy && writable)
+		case <-probe.C:
+			writable = m.spoolWritable()
+			m.ready.Store(healthy && writable)
 		case <-maintenance.C:
 			m.cleanupSpool(time.Now())
 		}
@@ -837,6 +848,17 @@ func (m *Manager) cleanupSpool(now time.Time) {
 			m.logger.Warn("spool cleanup: remove orphan failed", "name", name, "error", err)
 		}
 	}
+	// Atomic writes in auxiliary directories also leave .tmp-* files if a
+	// process crashes before rename. Only remove old temporary files, never
+	// visible records or user quarantines.
+	for _, dir := range []string{
+		filepath.Join(m.cfg.Dir, "failed"),
+		filepath.Join(m.cfg.Dir, "corrupt"),
+		m.cfg.QuarantineDir,
+	} {
+		if dir == "" { continue }
+		m.cleanupTemporaryFiles(dir, cutoff)
+	}
 	if m.cfg.FailedRetention <= 0 {
 		return
 	}
@@ -953,4 +975,22 @@ func (m *Manager) quarantineCorruptBytes(id string, raw []byte, reason string) e
 	if err := atomicWrite(filepath.Join(badDir,id+".reason"), []byte(reason+"\n"), 0o600); err != nil { return err }
 	if err := atomicWrite(filepath.Join(badDir,id+".envelope"), raw, 0o600); err != nil { return err }
 	return os.Remove(filepath.Join(m.cfg.Dir, id+".json"))
+}
+
+
+func (m *Manager) cleanupTemporaryFiles(dir string, cutoff time.Time) {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) { return }
+	if err != nil {
+		m.logger.Warn("spool cleanup: cannot inspect temporary directory", "dir", dir, "error", err)
+		return
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), ".tmp-") { continue }
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(cutoff) { continue }
+		if err := os.Remove(filepath.Join(dir, entry.Name())); err != nil && !os.IsNotExist(err) {
+			m.logger.Warn("spool cleanup: cannot remove abandoned temp", "dir",dir,"name",entry.Name(),"error",err)
+		}
+	}
 }

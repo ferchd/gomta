@@ -510,3 +510,36 @@ and periodically reconciled with the filesystem.
 Readiness now requires a small durable file write, sync, close, delete, and
 on POSIX systems a directory sync. It checks basic spool persistence, not
 whether every future large message can be accepted.
+
+
+## Fifth audit: mailbox identity, DSN and queue recovery
+
+GoMTA deduplicates local SMTP recipients using the case-insensitive mailbox
+identity of the configured users catalog; remote SMTP local parts preserve
+their original spelling. Maildir delivery is idempotent for a stable queue
+message ID and canonical mailbox address. Both new/ and cur/ are consulted,
+so a retry after an uncertain directory sync does not create another copy
+while the first copy remains present. This does **not** provide exactly-once
+delivery with a remote SMTP server or across lost filesystem writes.
+
+An authenticated sender authorized to use an explicit alias is recorded
+persistently as `sender_authorized` in the envelope. This allows DSN to be
+issued for delegated senders without enabling DSN backscatter for anonymous
+inbound SMTP. Old queued envelopes remain compatible where AuthUser == From.
+
+When a visible envelope has no payload, its metadata and diagnosis are
+preserved under `queue.dir/corrupt/` and the active queue entry is removed
+only after durable preservation and any applicable DSN publication.
+Malformed envelope JSON is preserved byte-for-byte as `.envelope` for
+administrative recovery. These records are **not** automatically deleted.
+
+SMTP starts accepting connections only after the queue has acquired its
+exclusive spool lock and is initially ready. The durable spool probe runs
+every 30 seconds, not on every normal queue scan. Auxiliary `.tmp-*` files
+under `failed/`, `corrupt/` and the quarantine directory are cleaned
+after `queue.orphan_grace`.
+
+SMTP DATA grows its memory reservations progressively as bytes arrive
+instead of reserving the entire configured maximum for every small message.
+This accounts for retained input buffers rather than every temporary
+allocation by Go, TLS, content filters, or delivery workers.
