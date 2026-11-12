@@ -277,7 +277,7 @@ func (s *session) Rcpt(to string, opts *smtp.RcptOptions) error {
 			}
 		}
 	}
-	if s.srv.cfg.Limits.ValidateLocalRecipients && s.srv.domains.IsLocal(domain) && s.users.Len() > 0 && !s.users.HasUser(to) {
+	if s.srv.cfg.Limits.ValidateLocalRecipients && s.srv.domains.IsLocal(domain) && (s.users == nil || !s.users.HasUser(to)) {
 		return smtpError(550, 5, 1, 1, "Unknown local recipient")
 	}
 	if s.rcpts[to] {
