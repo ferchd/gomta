@@ -83,12 +83,12 @@ type entry struct {
 
 // Runner constructs plugins and executes their hooks concurrently.
 type Runner struct {
-	logger    *slog.Logger
-	workers   int
-	timeout   time.Duration
-	sem       chan struct{}
-	budget    *ByteBudget
-	hooks     map[Hook][]entry
+	logger  *slog.Logger
+	workers int
+	timeout time.Duration
+	sem     chan struct{}
+	budget  *ByteBudget
+	hooks   map[Hook][]entry
 }
 
 // NewRunner builds all configured plugins. Any unknown plugin or invalid
@@ -105,12 +105,12 @@ func NewRunner(defs []Definition, cfg RunnerConfig) (*Runner, error) {
 		cfg.Timeout = 10 * time.Second
 	}
 	r := &Runner{
-		logger:    logger,
-		workers:   cfg.Workers,
-		timeout:   cfg.Timeout,
-		sem:       make(chan struct{}, cfg.Workers),
-		budget:    NewByteBudget(cfg.MaxSnapshotBytes),
-		hooks:     make(map[Hook][]entry),
+		logger:  logger,
+		workers: cfg.Workers,
+		timeout: cfg.Timeout,
+		sem:     make(chan struct{}, cfg.Workers),
+		budget:  NewByteBudget(cfg.MaxSnapshotBytes),
+		hooks:   make(map[Hook][]entry),
 	}
 	bc := BuildContext{BaseDir: cfg.BaseDir, Logger: logger, Budget: r.budget}
 
