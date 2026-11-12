@@ -69,13 +69,15 @@ func newRedis(url string) (Store, error) {
 }
 
 func (r *redisStore) Incr(ctx context.Context, key string, ttl time.Duration) (int64, error) {
-	pipe := r.client.TxPipeline()
-	incr := pipe.Incr(ctx, key)
-	pipe.Expire(ctx, key, ttl)
-	if _, err := pipe.Exec(ctx); err != nil {
-		return 0, err
-	}
-	return incr.Val(), nil
+	// INCR + EXPIRE only for the first increment is atomic and preserves a
+	// fixed TTL window, matching memoryStore. Repeated requests must not
+	// extend the expiry indefinitely.
+	const script = `local n = redis.call('INCR', KEYS[1])
+if n == 1 and tonumber(ARGV[1]) > 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return n`
+	return r.client.Eval(ctx, script, []string{key}, ttl.Milliseconds()).Int64()
 }
 
 func (r *redisStore) Get(ctx context.Context, key string) (string, bool, error) {

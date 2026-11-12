@@ -107,7 +107,6 @@ func (b *lmtpBackend) Deliver(ctx context.Context, m *Message) map[string]error 
 	return results
 }
 
- 
 // mergeLMTPResults preserves per-recipient successes even if other RCPTs fail.
 func mergeLMTPResults(results map[string]error, accepted []string, responses map[string]*smtp.DataResponse, closeErr error) {
 	var recipientErrors smtp.LMTPDataError
