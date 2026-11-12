@@ -89,6 +89,8 @@ type Config struct {
 	Workers     int
 	MaxAttempts int
 	MaxAge      time.Duration
+	OrphanGrace time.Duration
+	FailedRetention time.Duration
 	SendDSN     bool
 	DSNInbound  bool
 	Plugins     *plugin.Runner
@@ -128,6 +130,9 @@ func New(cfg Config, router Router) (*Manager, error) {
 	}
 	if cfg.MaxAge <= 0 {
 		cfg.MaxAge = 5 * 24 * time.Hour
+	}
+	if cfg.OrphanGrace <= 0 {
+		cfg.OrphanGrace = 24 * time.Hour
 	}
 	if len(cfg.Retry) == 0 {
 		cfg.Retry = []time.Duration{time.Minute, 5 * time.Minute, 15 * time.Minute, time.Hour, 6 * time.Hour}
@@ -210,7 +215,10 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
+	maintenance := time.NewTicker(time.Hour)
+	defer maintenance.Stop()
 	m.scan(ctx)
+	m.cleanupSpool(time.Now())
 	m.ready.Store(m.spoolWritable())
 	for {
 		select {
@@ -222,6 +230,8 @@ func (m *Manager) Start(ctx context.Context) error {
 			m.ready.Store(m.spoolWritable())
 		case <-m.wake:
 			m.scan(ctx)
+		case <-maintenance.C:
+			m.cleanupSpool(time.Now())
 		}
 	}
 }
@@ -732,4 +742,80 @@ func buildDSNMessage(host string, env *Envelope, failed []Recipient) []byte {
 	}
 	fmt.Fprintf(&b, "--%s--\r\n", boundary)
 	return []byte(b.String())
+}
+
+// cleanupSpool removes only inert, sufficiently old spool files. Completed
+// archived messages are never purged unless FailedRetention is explicitly set.
+func (m *Manager) cleanupSpool(now time.Time) {
+	entries, err := os.ReadDir(m.cfg.Dir)
+	if err != nil {
+		m.logger.Error("spool cleanup: cannot list queue", "error", err)
+		return
+	}
+	cutoff := now.Add(-m.cfg.OrphanGrace)
+	for _, entry := range entries {
+		if entry.IsDir() { continue }
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".eml") && !strings.HasPrefix(name, ".tmp-") { continue }
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(cutoff) { continue }
+		if strings.HasSuffix(name, ".eml") {
+			id := strings.TrimSuffix(name, ".eml")
+			m.mu.Lock()
+			active := m.inflight[id]
+			m.mu.Unlock()
+			if active { continue }
+			if _, err := os.Stat(filepath.Join(m.cfg.Dir, id+".json")); err == nil { continue } else if !os.IsNotExist(err) { continue }
+		}
+		if err := os.Remove(filepath.Join(m.cfg.Dir, name)); err != nil && !os.IsNotExist(err) {
+			m.logger.Warn("spool cleanup: remove orphan failed", "name", name, "error", err)
+		}
+	}
+	if m.cfg.FailedRetention <= 0 { return }
+	failedDir := filepath.Join(m.cfg.Dir, "failed")
+	archived, err := os.ReadDir(failedDir)
+	if os.IsNotExist(err) { return }
+	if err != nil {
+		m.logger.Warn("spool cleanup: cannot read failed archive", "error", err)
+		return
+	}
+	retentionCutoff := now.Add(-m.cfg.FailedRetention)
+	// First expire archive envelopes, then their payloads; never remove an
+	// archive payload whose envelope is still present and potentially readable.
+	for _, entry := range archived {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") { continue }
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(retentionCutoff) { continue }
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		m.mu.Lock()
+		active := m.inflight[id]
+		m.mu.Unlock()
+		if active { continue }
+		if _, err := os.Stat(filepath.Join(m.cfg.Dir, id+".json")); err == nil { continue } else if !os.IsNotExist(err) { continue }
+		path := filepath.Join(failedDir, entry.Name())
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			m.logger.Warn("spool cleanup: failed archive envelope removal", "name", entry.Name(), "error", err)
+		}
+	}
+	for _, entry := range archived {
+		if entry.IsDir() { continue }
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".eml") && !strings.HasSuffix(name, ".dsn") { continue }
+		info, err := entry.Info()
+		if err != nil || info.ModTime().After(retentionCutoff) { continue }
+		id := strings.TrimSuffix(strings.TrimSuffix(name, ".eml"), ".dsn")
+		if strings.HasSuffix(name, ".dsn") {
+			// Markers are retained while their originating message is still
+			// visible in the queue or archive, preventing repeated DSNs.
+			origin := id
+			if pos := strings.LastIndex(origin, "-dsn-"); pos >= 0 { origin = origin[:pos] }
+			if _, err := os.Stat(filepath.Join(m.cfg.Dir, origin+".json")); err == nil { continue } else if !os.IsNotExist(err) { continue }
+			if _, err := os.Stat(filepath.Join(failedDir, origin+".json")); err == nil { continue } else if !os.IsNotExist(err) { continue }
+		} else {
+			if _, err := os.Stat(filepath.Join(failedDir, id+".json")); err == nil { continue } else if !os.IsNotExist(err) { continue }
+		}
+		if err := os.Remove(filepath.Join(failedDir, name)); err != nil && !os.IsNotExist(err) {
+			m.logger.Warn("spool cleanup: remove expired archive artifact failed", "name", name, "error", err)
+		}
+	}
 }

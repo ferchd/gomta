@@ -130,6 +130,8 @@ type Queue struct {
 	Workers     int        `yaml:"workers"`
 	MaxAttempts int        `yaml:"max_attempts"`
 	MaxAge      Duration   `yaml:"max_age"`
+	OrphanGrace Duration  `yaml:"orphan_grace"`
+	FailedRetention Duration `yaml:"failed_retention"`
 	SendDSN     bool       `yaml:"send_dsn"`
 	DSNInbound  bool       `yaml:"dsn_inbound"`
 	Retry       []Duration `yaml:"retry_schedule"`
@@ -277,6 +279,9 @@ func (c *Config) applyDefaults() {
 	if c.Queue.MaxAge <= 0 {
 		c.Queue.MaxAge = Duration(5 * 24 * time.Hour)
 	}
+	if c.Queue.OrphanGrace <= 0 {
+		c.Queue.OrphanGrace = Duration(24 * time.Hour)
+	}
 	if len(c.Queue.Retry) == 0 {
 		c.Queue.Retry = []Duration{
 			Duration(1 * time.Minute),
@@ -353,6 +358,15 @@ func (c *Config) Validate() error {
 	}
 	if c.Queue.MaxAttempts < 1 {
 		errs = append(errs, errors.New("queue.max_attempts must be at least 1"))
+	}
+	if c.Queue.OrphanGrace.Std() < time.Hour {
+		errs = append(errs, errors.New("queue.orphan_grace must be at least 1h"))
+	}
+	if c.Queue.FailedRetention < 0 {
+		errs = append(errs, errors.New("queue.failed_retention must not be negative"))
+	}
+	if c.Queue.FailedRetention > 0 && c.Queue.FailedRetention.Std() < 24*time.Hour {
+		errs = append(errs, errors.New("queue.failed_retention must be at least 24h when enabled"))
 	}
 	for _, d := range c.Queue.Retry {
 		if d.Std() <= 0 {

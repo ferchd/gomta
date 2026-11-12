@@ -216,3 +216,46 @@ func TestScanRecoversPendingRecipientDSN(t *testing.T) {
 		t.Fatalf("scan did not recover failed recipient notice: %v", err)
 	}
 }
+
+ 
+func TestCleanupSpoolPreservesVisibleAndYoungOrphans(t *testing.T) {
+	root := t.TempDir()
+	m, err := New(Config{Dir:root, OrphanGrace: 24*time.Hour}, testRouter{})
+	if err != nil { t.Fatal(err) }
+	now := time.Now()
+	write := func(file string, old bool) {
+		path := filepath.Join(root,file)
+		if err := os.WriteFile(path, []byte("message"), 0o600); err != nil { t.Fatal(err) }
+		if old {
+			when := now.Add(-48*time.Hour)
+			if err := os.Chtimes(path, when, when); err != nil { t.Fatal(err) }
+		}
+	}
+	write("stale.eml", true)
+	write("recent.eml", false)
+	write("paired.eml", true)
+	write("paired.json", true)
+	write(".tmp-old", true)
+	m.cleanupSpool(now)
+	for _, file := range []string{"stale.eml", ".tmp-old"} {
+		if _, err := os.Stat(filepath.Join(root,file)); !os.IsNotExist(err) { t.Fatalf("%s not removed: %v",file,err) }
+	}
+	for _, file := range []string{"recent.eml", "paired.eml", "paired.json"} {
+		if _, err := os.Stat(filepath.Join(root,file)); err != nil { t.Fatalf("%s incorrectly removed: %v",file,err) }
+	}
+}
+
+func TestFailedRetentionPreservesActiveDSNMarker(t *testing.T) {
+	root := t.TempDir()
+	m, err := New(Config{Dir: root, FailedRetention:24*time.Hour}, testRouter{})
+	if err != nil { t.Fatal(err) }
+	if err := os.MkdirAll(filepath.Join(root,"failed"),0o700); err != nil { t.Fatal(err) }
+	when := time.Now().Add(-48*time.Hour)
+	paths := []string{filepath.Join(root,"original.json"),filepath.Join(root,"failed","original-dsn-abcd.dsn")}
+	for _,path := range paths {
+		if err := os.WriteFile(path,[]byte("x"),0o600); err != nil { t.Fatal(err) }
+		if err := os.Chtimes(path,when,when); err != nil { t.Fatal(err) }
+	}
+	m.cleanupSpool(time.Now())
+	if _,err := os.Stat(paths[1]);err!=nil { t.Fatalf("active DSN marker lost: %v",err) }
+}

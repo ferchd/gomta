@@ -304,6 +304,10 @@ queue:
   workers: 4
   max_attempts: 100
   max_age: 120h
+  orphan_grace: 24h
+  # Disabled by default: operators must explicitly enable destruction of
+  # archived failed mail and DSN markers after a retention window.
+  failed_retention: 0s
   send_dsn: true
   dsn_inbound: false
   retry_schedule:
