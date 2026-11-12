@@ -3,6 +3,7 @@ package smtpserver
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -182,4 +183,74 @@ func (m *memoryBudget) release(n int64) {
 	close(m.wait)
 	m.wait = make(chan struct{})
 	m.mu.Unlock()
+}
+
+
+// errMessageTooLarge distinguishes SMTP message-size violations from resource
+// exhaustion so callers can return an appropriate permanent SMTP response.
+var errMessageTooLarge = errors.New("message exceeds maximum SMTP DATA size")
+
+// readBounded reserves capacity progressively instead of booking the entire
+// configured message maximum for every small SMTP transaction. Reservations
+// track retained slice capacity (not the Go runtime's temporary GC overhead).
+// The caller must invoke release exactly once after it stops using the bytes.
+func (m *memoryBudget) readBounded(r io.Reader, max int64) (data []byte, release func(), err error) {
+	var held int64
+	var once sync.Once
+	release = func() {
+		once.Do(func() {
+			if held > 0 {
+				m.release(held)
+			}
+		})
+	}
+	if max < 1 {
+		return nil, release, errMessageTooLarge
+	}
+	limited := io.LimitReader(r, max+1)
+	buf := make([]byte, 32*1024)
+	noProgress := 0
+	for {
+		n, readErr := limited.Read(buf)
+		if n > 0 {
+			noProgress = 0
+			want := int64(len(data)) + int64(n)
+			if want > max {
+				release()
+				return nil, func(){}, errMessageTooLarge
+			}
+			if want > int64(cap(data)) {
+				newCapacity := int64(cap(data)) * 2
+				if newCapacity < 32*1024 { newCapacity = 32*1024 }
+				if newCapacity < want { newCapacity = want }
+				if newCapacity > max { newCapacity = max }
+				growth := newCapacity-int64(cap(data))
+				budgetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				reserveErr := m.acquire(budgetCtx, growth)
+				cancel()
+				if reserveErr != nil {
+					release()
+					return nil, func(){}, reserveErr
+				}
+				held += growth
+				next := make([]byte, len(data), int(newCapacity))
+				copy(next, data)
+				data = next
+			}
+			data = append(data, buf[:n]...)
+		} else if readErr == nil {
+			noProgress++
+			if noProgress > 100 {
+				release()
+				return nil, func(){}, io.ErrNoProgress
+			}
+		}
+		if readErr == io.EOF {
+			return data, release, nil
+		}
+		if readErr != nil {
+			release()
+			return nil, func(){}, readErr
+		}
+	}
 }

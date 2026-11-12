@@ -312,22 +312,17 @@ func (s *session) Data(r io.Reader) error {
 	if max <= 0 {
 		max = s.srv.cfg.Limits.MaxMessageBytes
 	}
-	budgetCtx, budgetCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer budgetCancel()
-	if err := s.srv.memory.acquire(budgetCtx, max+1); err != nil {
-		return smtpError(452, 4, 3, 1, "Insufficient memory budget for message")
-	}
-	defer s.srv.memory.release(max + 1)
 	s.tx.MaxBodyBytes = max
 	s.tx.ID = queue.NewID()
 	s.tx.Arrived = time.Now()
-	data, err := io.ReadAll(io.LimitReader(r, max+1))
+	data, releaseBudget, err := s.srv.memory.readBounded(r, max)
+	defer releaseBudget()
+	if errors.Is(err, errMessageTooLarge) {
+		return smtpError(552, 5, 3, 4, "Message exceeds maximum size")
+	}
 	if err != nil {
 		s.srv.logger.Warn("failed reading message data", "queue_id", s.tx.ID, "error", err)
-		return smtpError(451, 4, 3, 0, "Error reading message data")
-	}
-	if int64(len(data)) > max {
-		return smtpError(552, 5, 3, 4, "Message exceeds maximum size")
+		return smtpError(451, 4, 3, 0, "Unable to read message or reserve DATA memory")
 	}
 	s.tx.Data = data
 	s.tx.Size = int64(len(data))
