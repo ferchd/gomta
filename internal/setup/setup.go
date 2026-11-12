@@ -248,6 +248,7 @@ log:
 
 limits:
   max_message_bytes: 26214400
+  max_data_memory_bytes: 134217728
   max_recipients: 100
   max_connections: 200
   max_connections_per_ip: 20

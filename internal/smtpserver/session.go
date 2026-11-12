@@ -144,6 +144,9 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 		return nil, smtp.ErrAuthFailed
 	}
 	s.mu.Unlock()
+	if !s.srv.authGuard.allow(s.tx.RemoteAddr) {
+		return nil, smtp.ErrAuthFailed
+	}
 
 	verify := func(username, password string) error {
 		resolvedUser := s.authenticate(username, password)
@@ -151,6 +154,7 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 			s.mu.Lock()
 			s.authFailures++
 			s.mu.Unlock()
+			s.srv.authGuard.failure(s.tx.RemoteAddr)
 			s.srv.logger.Warn("authentication failed", "remote", s.tx.RemoteAddr, "user", username)
 			return smtp.ErrAuthFailed
 		}
@@ -159,6 +163,7 @@ func (s *session) Auth(mech string) (sasl.Server, error) {
 		s.authUser = resolvedUser
 		s.tx.AuthUser = s.authUser
 		s.mu.Unlock()
+		s.srv.authGuard.success(s.tx.RemoteAddr)
 		s.srv.logger.Info("authentication succeeded", "remote", s.tx.RemoteAddr, "user", s.authUser)
 		return nil
 	}
@@ -298,6 +303,12 @@ func (s *session) Data(r io.Reader) error {
 	if max <= 0 {
 		max = s.srv.cfg.Limits.MaxMessageBytes
 	}
+	budgetCtx, budgetCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer budgetCancel()
+	if err := s.srv.memory.acquire(budgetCtx, max+1); err != nil {
+		return smtpError(452, 4, 3, 1, "Insufficient memory budget for message")
+	}
+	defer s.srv.memory.release(max+1)
 	s.tx.ID = queue.NewID()
 	s.tx.Arrived = time.Now()
 	data, err := io.ReadAll(io.LimitReader(r, max+1))
