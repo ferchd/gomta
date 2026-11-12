@@ -207,6 +207,13 @@ func (m *Manager) Enqueue(ctx context.Context, env *Envelope, msg []byte) error 
 // Start launches delivery workers and the scan loop. It blocks until ctx is
 // canceled, then waits for in-flight deliveries.
 func (m *Manager) Start(ctx context.Context) error {
+	// Only one process may process a spool. In-memory inflight tracking does
+	// not coordinate separate GoMTA instances on a shared filesystem.
+	release, err := acquireSpoolLock(m.cfg.Dir)
+	if err != nil {
+		return fmt.Errorf("queue: acquire exclusive spool lock: %w", err)
+	}
+	defer release()
 	m.logger.Info("queue started", "dir", m.cfg.Dir, "workers", m.cfg.Workers)
 	defer m.ready.Store(false)
 	for i := 0; i < m.cfg.Workers; i++ {
