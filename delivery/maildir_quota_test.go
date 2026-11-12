@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -120,7 +121,11 @@ func TestMaildirRetryDoesNotDuplicateDelivery(t *testing.T) {
 		t.Fatalf("idempotent delivery created %d files", len(newFiles))
 	}
 	name := newFiles[0].Name()
-	if err := os.Rename(filepath.Join(box, "new", name), filepath.Join(box, "cur", name+":2,S")); err != nil {
+	curName := name
+	if runtime.GOOS != "windows" {
+		curName += ":2,S"
+	}
+	if err := os.Rename(filepath.Join(box, "new", name), filepath.Join(box, "cur", curName)); err != nil {
 		t.Fatal(err)
 	}
 	if err := b.deliverOne("alice@example.test", msg); err != nil {
@@ -147,7 +152,11 @@ func TestFirstAttemptSkipsCurScanAndRetryFindsMaildirFlags(t *testing.T) {
 		t.Fatalf("new mail unexpected: %v %+v", err, files)
 	}
 	name := files[0].Name()
-	if err := os.Rename(filepath.Join(box, "new", name), filepath.Join(box, "cur", name+":2,S")); err != nil {
+	curName := name
+	if runtime.GOOS != "windows" {
+		curName += ":2,S"
+	}
+	if err := os.Rename(filepath.Join(box, "new", name), filepath.Join(box, "cur", curName)); err != nil {
 		t.Fatal(err)
 	}
 	msg.Attempt = 2
