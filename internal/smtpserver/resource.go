@@ -185,7 +185,6 @@ func (m *memoryBudget) release(n int64) {
 	m.mu.Unlock()
 }
 
-
 // errMessageTooLarge distinguishes SMTP message-size violations from resource
 // exhaustion so callers can return an appropriate permanent SMTP response.
 var errMessageTooLarge = errors.New("message exceeds maximum SMTP DATA size")
@@ -217,20 +216,26 @@ func (m *memoryBudget) readBounded(r io.Reader, max int64) (data []byte, release
 			want := int64(len(data)) + int64(n)
 			if want > max {
 				release()
-				return nil, func(){}, errMessageTooLarge
+				return nil, func() {}, errMessageTooLarge
 			}
 			if want > int64(cap(data)) {
 				newCapacity := int64(cap(data)) * 2
-				if newCapacity < 32*1024 { newCapacity = 32*1024 }
-				if newCapacity < want { newCapacity = want }
-				if newCapacity > max { newCapacity = max }
-				growth := newCapacity-int64(cap(data))
+				if newCapacity < 32*1024 {
+					newCapacity = 32 * 1024
+				}
+				if newCapacity < want {
+					newCapacity = want
+				}
+				if newCapacity > max {
+					newCapacity = max
+				}
+				growth := newCapacity - int64(cap(data))
 				budgetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				reserveErr := m.acquire(budgetCtx, growth)
 				cancel()
 				if reserveErr != nil {
 					release()
-					return nil, func(){}, reserveErr
+					return nil, func() {}, reserveErr
 				}
 				held += growth
 				next := make([]byte, len(data), int(newCapacity))
@@ -242,7 +247,7 @@ func (m *memoryBudget) readBounded(r io.Reader, max int64) (data []byte, release
 			noProgress++
 			if noProgress > 100 {
 				release()
-				return nil, func(){}, io.ErrNoProgress
+				return nil, func() {}, io.ErrNoProgress
 			}
 		}
 		if readErr == io.EOF {
@@ -250,7 +255,7 @@ func (m *memoryBudget) readBounded(r io.Reader, max int64) (data []byte, release
 		}
 		if readErr != nil {
 			release()
-			return nil, func(){}, readErr
+			return nil, func() {}, readErr
 		}
 	}
 }

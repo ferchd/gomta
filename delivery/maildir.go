@@ -45,7 +45,7 @@ type maildirBackend struct {
 	hostname        string
 	mu              sync.Mutex // protects quotas, not all deliveries
 	quotas          map[string]*maildirQuota
-	mailboxLocks sync.Map // canonical Maildir directory -> *sync.Mutex
+	mailboxLocks    sync.Map // canonical Maildir directory -> *sync.Mutex
 	maxMailboxBytes int64
 	maxDomainBytes  int64
 }
@@ -319,7 +319,6 @@ func (q *maildirQuota) reconcile(domainPath string) error {
 	return nil
 }
 
-
 // maildirMessageName produces a stable, safe identity for queued messages.
 // Empty IDs (ad-hoc direct backend use) preserve one-file-per-call semantics.
 func maildirMessageName(id, domain, local string) string {
@@ -335,14 +334,24 @@ func maildirMessageName(id, domain, local string) string {
 func maildirHasMessage(box, name string, scanCur bool) (bool, error) {
 	// Exact new/ path is O(1), avoiding a full mailbox listing in the common case.
 	_, err := os.Stat(filepath.Join(box, "new", name))
-	if err == nil { return true, nil }
-	if !os.IsNotExist(err) { return false, err }
-	if !scanCur { return false, nil }
+	if err == nil {
+		return true, nil
+	}
+	if !os.IsNotExist(err) {
+		return false, err
+	}
+	if !scanCur {
+		return false, nil
+	}
 	// Only a persisted retry needs to search cur/: a mail reader may have
 	// already moved the prior delivery there and added Maildir flags.
 	entries, err := os.ReadDir(filepath.Join(box, "cur"))
-	if os.IsNotExist(err) { return false, nil }
-	if err != nil { return false, err }
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
 	for _, entry := range entries {
 		if entry.Name() == name || strings.HasPrefix(entry.Name(), name+":2,") {
 			return true, nil
