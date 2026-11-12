@@ -213,23 +213,31 @@ func TestOrderedPluginIndividualTimeout(t *testing.T) {
 		return OK(), nil
 	}}
 	r := newTestRunner(t, map[Hook][]entry{HookQueue: {testEntry(slow, 0, 0)}})
-	r.hooks[HookQueue][0].timeout = 20*time.Millisecond
+	r.hooks[HookQueue][0].timeout = 20 * time.Millisecond
 	r.timeout = time.Second
 	tx := NewTx()
 	started := time.Now()
 	out := r.Run(context.Background(), HookQueue, tx)
-	if !out.TimedOut || out.Decision.Action != ActionTempFail { t.Fatalf("timeout did not fail closed: %+v", out) }
-	if time.Since(started) > 100*time.Millisecond { t.Fatal("individual plugin timeout ignored") }
+	if !out.TimedOut || out.Decision.Action != ActionTempFail {
+		t.Fatalf("timeout did not fail closed: %+v", out)
+	}
+	if time.Since(started) > 100*time.Millisecond {
+		t.Fatal("individual plugin timeout ignored")
+	}
 	<-done
-	if _, ok := tx.Meta("delayed"); ok { t.Fatal("late write reached the original transaction") }
+	if _, ok := tx.Meta("delayed"); ok {
+		t.Fatal("late write reached the original transaction")
+	}
 }
 
 func TestSnapshotMetadataDoesNotShareNestedMap(t *testing.T) {
 	src := NewTx()
-	src.SetMeta("settings", map[string]any{"nested": map[string]any{"key":"original"}})
+	src.SetMeta("settings", map[string]any{"nested": map[string]any{"key": "original"}})
 	clone := snapshotTx(src)
 	value, _ := clone.Meta("settings")
 	value.(map[string]any)["nested"].(map[string]any)["key"] = "modified"
 	original, _ := src.Meta("settings")
-	if original.(map[string]any)["nested"].(map[string]any)["key"] != "original" { t.Fatal("plugin snapshot shared mutable metadata") }
+	if original.(map[string]any)["nested"].(map[string]any)["key"] != "original" {
+		t.Fatal("plugin snapshot shared mutable metadata")
+	}
 }

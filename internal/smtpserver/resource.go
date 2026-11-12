@@ -27,13 +27,17 @@ type authFailureGuard struct {
 
 func newAuthFailureGuard(perSession int) *authFailureGuard {
 	max := perSession * 4
-	if max < 10 { max = 10 }
-	return &authFailureGuard{attempts: make(map[string]failureWindow), max: max, window: 15*time.Minute, capacity: 10000}
+	if max < 10 {
+		max = 10
+	}
+	return &authFailureGuard{attempts: make(map[string]failureWindow), max: max, window: 15 * time.Minute, capacity: 10000}
 }
 
 func (g *authFailureGuard) key(remote string) string {
 	ip, _, err := net.SplitHostPort(remote)
-	if err == nil { return ip }
+	if err == nil {
+		return ip
+	}
 	return remote
 }
 
@@ -49,9 +53,13 @@ func (g *authFailureGuard) activeLocked(key string, now time.Time) failureWindow
 func (g *authFailureGuard) capacityForLocked(keys []string, now time.Time) bool {
 	missing := 0
 	for _, key := range keys {
-		if _, ok := g.attempts[key]; !ok { missing++ }
+		if _, ok := g.attempts[key]; !ok {
+			missing++
+		}
 	}
-	if len(g.attempts)+missing <= g.capacity { return true }
+	if len(g.attempts)+missing <= g.capacity {
+		return true
+	}
 	for key, value := range g.attempts {
 		if now.After(value.expires) {
 			delete(g.attempts, key)
@@ -77,7 +85,9 @@ func (g *authFailureGuard) begin(remote, username string) bool {
 	}
 	for _, key := range keys {
 		w := g.activeLocked(key, now)
-		if w.expires.IsZero() { w.expires = now.Add(g.window) }
+		if w.expires.IsZero() {
+			w.expires = now.Add(g.window)
+		}
 		w.count++
 		g.attempts[key] = w
 	}
@@ -87,14 +97,24 @@ func (g *authFailureGuard) begin(remote, username string) bool {
 // complete removes successful attempts from both budgets. Failed attempts
 // remain until the fixed window expires.
 func (g *authFailureGuard) complete(remote, username string, success bool) {
-	if !success { return }
+	if !success {
+		return
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for _, key := range []string{"ip:" + g.key(remote), "account:" + strings.ToLower(strings.TrimSpace(username))} {
 		w, ok := g.attempts[key]
-		if !ok { continue }
-		if w.count > 0 { w.count-- }
-		if w.count == 0 { delete(g.attempts, key) } else { g.attempts[key] = w }
+		if !ok {
+			continue
+		}
+		if w.count > 0 {
+			w.count--
+		}
+		if w.count == 0 {
+			delete(g.attempts, key)
+		} else {
+			g.attempts[key] = w
+		}
 	}
 }
 
@@ -108,9 +128,11 @@ func (g *authFailureGuard) allow(remote string) bool {
 func (g *authFailureGuard) failure(remote string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	k := "ip:"+g.key(remote)
+	k := "ip:" + g.key(remote)
 	w := g.activeLocked(k, time.Now())
-	if w.expires.IsZero() { w.expires = time.Now().Add(g.window) }
+	if w.expires.IsZero() {
+		w.expires = time.Now().Add(g.window)
+	}
 	w.count++
 	g.attempts[k] = w
 }

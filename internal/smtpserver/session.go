@@ -543,15 +543,20 @@ func smtpError(code, c1, c2, c3 int, msg string) error {
 var _ smtp.AuthSession = (*session)(nil)
 var _ smtp.Session = (*session)(nil)
 
- 
 // senderAuthorized checks the authenticated primary identity and explicit,
 // per-account delegated aliases. No domain wildcards or implicit delegation.
 func (s *session) senderAuthorized(address string) bool {
-	if strings.EqualFold(address, s.authUser) { return true }
+	if strings.EqualFold(address, s.authUser) {
+		return true
+	}
 	for account, aliases := range s.srv.cfg.AuthorizedSenders {
-		if !strings.EqualFold(account, s.authUser) { continue }
+		if !strings.EqualFold(account, s.authUser) {
+			continue
+		}
 		for _, alias := range aliases {
-			if strings.EqualFold(alias, address) { return true }
+			if strings.EqualFold(alias, address) {
+				return true
+			}
 		}
 	}
 	return false
