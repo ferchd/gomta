@@ -32,19 +32,19 @@ func NewMaildir(bc plugin.BuildContext, opts plugin.Options) (Backend, error) {
 		return nil, fmt.Errorf("create maildir root: %w", err)
 	}
 	return &maildirBackend{
-		root: path,
-		hostname: opts.String("hostname", ""),
+		root:            path,
+		hostname:        opts.String("hostname", ""),
 		maxMailboxBytes: int64(opts.Int("max_mailbox_bytes", 512*1024*1024)),
-		maxDomainBytes: int64(opts.Int("max_domain_bytes", 5*1024*1024*1024)),
+		maxDomainBytes:  int64(opts.Int("max_domain_bytes", 5*1024*1024*1024)),
 	}, nil
 }
 
 type maildirBackend struct {
-	root     string
-	hostname string
-	mu sync.Mutex
+	root            string
+	hostname        string
+	mu              sync.Mutex
 	maxMailboxBytes int64
-	maxDomainBytes int64
+	maxDomainBytes  int64
 }
 
 func (b *maildirBackend) Name() string { return "maildir" }
@@ -183,7 +183,6 @@ func syncMaildir(path string) error {
 	return f.Sync()
 }
 
- 
 func maildirUsage(root string) (int64, error) {
 	var size int64
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
