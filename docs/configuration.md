@@ -424,7 +424,7 @@ one process, not across multiple instances writing to the same shared disk.
 Use an external mailbox backend with central quotas in clustered deployments.
 
 The rate-limit plugin accepts `scope: smart` (authenticated account or
-IP+sender for unauthenticated clients), `skip_authenticated: false` and
+per-IP for unauthenticated clients), `skip_authenticated: false` and
 `fail_closed: true`. Shared rate limits across nodes require Redis.
 SMTP AUTH also enforces per-IP failure windows across connections within
 a single GoMTA process.
@@ -479,4 +479,34 @@ messages and delivery-status markers indefinitely. Set a duration (at least
 `24h`) only after establishing backups and operational retention policies.
 Expired archive envelopes are removed before payloads. DSN markers are
 preserved as long as the associated original envelope remains in the spool
-or failed archive. Do not configure two writers against one spool directory.
+or failed archive. One running GoMTA worker pool holds an exclusive OS lock
+on its spool; a second process must fail startup instead of delivering the
+same recipients concurrently. The lock is advisory and requires a filesystem
+that implements the relevant OS locking semantics.
+
+ 
+## Additional safeguards after the fourth audit
+
+The `rate_limit` plugin's `scope: smart` now counts unauthenticated SMTP
+traffic by **IP alone**. The unauthenticated sender is client-controlled; using
+it as part of the limit key allowed a client to bypass the limit by rotating
+`MAIL FROM`. Authenticated submissions remain grouped by authenticated user.
+
+For the `exec` filtering plugin, `max_output_bytes` is a strictly enforced
+capture limit (default 64 MiB). Process stdout terminates with an error when
+it grows beyond this cap, even with `replace_body: false`. Stderr diagnostics
+are retained up to 64 KiB. Oversized resulting message bodies are rejected by
+the SMTP pipeline, including after message/header transformations. Plugins
+running inside the Go process can still allocate memory before returning, so
+runtime isolation of untrusted plugins requires a separate process.
+
+The Maildir backend uses the local recipient identity in lowercase, matching
+GoMTA's case-insensitive `users.txt` lookup. The original SMTP recipient is
+still recorded in `Delivered-To` and `X-Original-To`. Domain quota
+reservations are serialized briefly; disk I/O occurs outside the lock to
+permit concurrent delivery to the same domain. Quota counters are per process
+and periodically reconciled with the filesystem.
+
+Readiness now requires a small durable file write, sync, close, delete, and
+on POSIX systems a directory sync. It checks basic spool persistence, not
+whether every future large message can be accepted.
