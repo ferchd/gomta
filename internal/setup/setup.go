@@ -300,7 +300,10 @@ relay_networks:
 
 queue:
   workers: 4
-  max_attempts: 6
+  max_attempts: 100
+  max_age: 120h
+  send_dsn: true
+  dsn_inbound: false
   retry_schedule:
     - 1m
     - 5m
