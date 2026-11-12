@@ -4,6 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -74,4 +77,42 @@ func TestAuthGuardAccountLimitAcrossIPs(t *testing.T) {
 	if g.begin("203.0.113.1:1234", "target@example.test") {
 		t.Fatal("account limit bypassed with another IP")
 	}
+}
+
+func TestProgressiveDATAAllowsManySmallMessages(t *testing.T) {
+	budget := newMemoryBudget(128*1024)
+	const sessions = 20
+	var wg sync.WaitGroup
+	ready := make(chan struct{})
+	var active int32
+	for i:=0;i<sessions;i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			data,release,err:=budget.readBounded(strings.NewReader("short message"), 25<<20)
+			if err!=nil {t.Errorf("small message rejected: %v",err);return}
+			if string(data)!="short message" {t.Errorf("unexpected DATA: %q",data)}
+			atomic.AddInt32(&active,1)
+			<-ready
+			release()
+		}()
+	}
+	// A 25MiB upfront reservation would fail with this 128KiB budget. With
+	// progressive reservations the first four sessions can run concurrently.
+	time.Sleep(80*time.Millisecond)
+	if atomic.LoadInt32(&active)<3 {close(ready);wg.Wait();t.Fatalf("small messages did not share memory: %d",active)}
+	close(ready)
+	wg.Wait()
+	budget.mu.Lock()
+	defer budget.mu.Unlock()
+	if budget.used!=0 {t.Fatalf("DATA reservations leaked: %d",budget.used)}
+}
+func TestProgressiveDATARejectsOversizeAndReleasesMemory(t *testing.T) {
+	budget := newMemoryBudget(256*1024)
+	_,release,err:=budget.readBounded(strings.NewReader(strings.Repeat("X",1025)),1024)
+	release()
+	if !errors.Is(err,errMessageTooLarge) {t.Fatalf("expected size violation, got %v",err)}
+	budget.mu.Lock()
+	defer budget.mu.Unlock()
+	if budget.used!=0 {t.Fatalf("memory leaked after rejection: %d",budget.used)}
 }
