@@ -587,7 +587,6 @@ func cloneMetaSnapshot(src map[string]any) map[string]any {
 	return out
 }
 
- 
 // enforceBodyLimit refuses an oversized plugin replacement before applying it
 // to the transaction or allowing subsequent ordered filters to copy it.
 func (r *Runner) enforceBodyLimit(tx *Tx, pr *PluginResult) {

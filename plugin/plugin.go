@@ -173,24 +173,24 @@ func OK() Outcome { return Outcome{Action: ActionContinue} }
 // Tx is the transaction passed to plugins. Fields are read-only after the
 // transaction reaches a hook; metadata and added headers are synchronized.
 type Tx struct {
-	ID         string
-	RemoteIP   net.IP
-	RemoteIPs  []net.IP
-	RemoteAddr string
-	Helo       string
-	TLS        bool
-	TLSVersion string
-	AuthUser   string
-	MailFrom   string
-	RcptTo     []string
-	Recipient  string
-	Data       []byte
-	Header     textproto.MIMEHeader
-	Size       int64
+	ID           string
+	RemoteIP     net.IP
+	RemoteIPs    []net.IP
+	RemoteAddr   string
+	Helo         string
+	TLS          bool
+	TLSVersion   string
+	AuthUser     string
+	MailFrom     string
+	RcptTo       []string
+	Recipient    string
+	Data         []byte
+	Header       textproto.MIMEHeader
+	Size         int64
 	MaxBodyBytes int64 // maximum permitted data after transformations, zero = unrestricted
-	Mode       Mode
-	ServerName string
-	Arrived    time.Time
+	Mode         Mode
+	ServerName   string
+	Arrived      time.Time
 
 	mu      sync.RWMutex
 	meta    map[string]any
