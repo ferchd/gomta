@@ -86,7 +86,6 @@ func TestFinishArchivesFailedRecipientsBeforeSourceRemoval(t *testing.T) {
 	}
 }
 
- 
 func TestFailureDSNForAuthenticatedSubmission(t *testing.T) {
 	m, err := New(Config{Dir: t.TempDir(), SendDSN: true}, testRouter{})
 	if err != nil {
