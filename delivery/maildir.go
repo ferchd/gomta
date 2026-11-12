@@ -87,7 +87,7 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 	defer mailboxLock.Unlock()
 	name := maildirMessageName(m.ID, domain, local)
 	if name != "" {
-		present, err := maildirHasMessage(box, name)
+		present, err := maildirHasMessage(box, name, m.Attempt != 1)
 		if err != nil {
 			return Temp(fmt.Errorf("check Maildir delivery identity: %w", err))
 		}
@@ -332,19 +332,20 @@ func maildirMessageName(id, domain, local string) string {
 
 // maildirHasMessage checks both unread new/ and already-read cur/ entries.
 // Mail readers conventionally append :2,<flags> when moving a file to cur/.
-func maildirHasMessage(box, name string) (bool, error) {
-	for _, folder := range []string{"new", "cur"} {
-		entries, err := os.ReadDir(filepath.Join(box, folder))
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return false, err
-		}
-		for _, entry := range entries {
-			if entry.Name() == name || strings.HasPrefix(entry.Name(), name+":2,") {
-				return true, nil
-			}
+func maildirHasMessage(box, name string, scanCur bool) (bool, error) {
+	// Exact new/ path is O(1), avoiding a full mailbox listing in the common case.
+	_, err := os.Stat(filepath.Join(box, "new", name))
+	if err == nil { return true, nil }
+	if !os.IsNotExist(err) { return false, err }
+	if !scanCur { return false, nil }
+	// Only a persisted retry needs to search cur/: a mail reader may have
+	// already moved the prior delivery there and added Maildir flags.
+	entries, err := os.ReadDir(filepath.Join(box, "cur"))
+	if os.IsNotExist(err) { return false, nil }
+	if err != nil { return false, err }
+	for _, entry := range entries {
+		if entry.Name() == name || strings.HasPrefix(entry.Name(), name+":2,") {
+			return true, nil
 		}
 	}
 	return false, nil

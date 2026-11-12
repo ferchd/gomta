@@ -378,6 +378,12 @@ func (m *Manager) process(ctx context.Context, env *Envelope) {
 
 	env.Attempts++
 	env.Updated = time.Now()
+	// Persist attempt intent before any backend side effect. A restart after
+	// an accepted but unjournaled delivery must be identifiable as a retry.
+	if err := atomicWrite(jsonPath, mustJSON(env), 0o600); err != nil {
+		m.logger.Error("queue: persist delivery intent failed", "id", env.ID, "error", err)
+		return
+	}
 
 	type group struct {
 		route Route
@@ -402,6 +408,7 @@ func (m *Manager) process(ctx context.Context, env *Envelope) {
 	for _, g := range groups {
 		msgObj := &delivery.Message{
 			ID:       env.ID,
+			Attempt:  env.Attempts,
 			From:     env.From,
 			To:       g.rcpts,
 			Data:     msg,

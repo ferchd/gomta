@@ -118,3 +118,18 @@ func TestMaildirRetryDoesNotDuplicateDelivery(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	if len(newFiles) != 0 { t.Fatalf("message was redelivered after move to cur: %d",len(newFiles)) }
 }
+
+func TestFirstAttemptSkipsCurScanAndRetryFindsMaildirFlags(t *testing.T) {
+	b:=&maildirBackend{root:t.TempDir(),quotas:make(map[string]*maildirQuota)}
+	msg:=&Message{ID:"intent-persisted",Attempt:1,Data:[]byte("hello")}
+	if err:=b.deliverOne("Alice@example.test",msg);err!=nil {t.Fatal(err)}
+	box:=filepath.Join(b.root,"example.test","alice")
+	files,err:=os.ReadDir(filepath.Join(box,"new"))
+	if err!=nil || len(files)!=1 {t.Fatalf("new mail unexpected: %v %+v",err,files)}
+	name:=files[0].Name()
+	if err:=os.Rename(filepath.Join(box,"new",name), filepath.Join(box,"cur",name+":2,S"));err!=nil {t.Fatal(err)}
+	msg.Attempt=2
+	if err:=b.deliverOne("alice@example.test",msg);err!=nil {t.Fatal(err)}
+	files,err=os.ReadDir(filepath.Join(box,"new"))
+	if err!=nil || len(files)!=0 {t.Fatalf("retry duplicated already-read mail: %v %+v",err,files)}
+}
