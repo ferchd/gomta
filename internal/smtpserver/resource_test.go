@@ -104,9 +104,9 @@ func TestProgressiveDATAAllowsManySmallMessages(t *testing.T) {
 	}
 	// A 25MiB upfront reservation would fail with this 128KiB budget. With
 	// progressive reservations the first four sessions can run concurrently.
-	deadline := time.Now().Add(3*time.Second)
+	deadline := time.Now().Add(3 * time.Second)
 	for atomic.LoadInt32(&active) < 3 && time.Now().Before(deadline) {
-		time.Sleep(10*time.Millisecond)
+		time.Sleep(10 * time.Millisecond)
 	}
 	if atomic.LoadInt32(&active) < 3 {
 		close(ready)
