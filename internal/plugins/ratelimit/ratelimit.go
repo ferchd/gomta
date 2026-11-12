@@ -30,19 +30,20 @@ func init() {
 			store:             store,
 			limit:             opts.Int("limit", 200),
 			window:            opts.Duration("window", time.Hour),
-			scope:             strings.ToLower(opts.String("scope", "ip")),
+			scope:             strings.ToLower(opts.String("scope", "smart")),
 			action:            action,
 			code:              opts.Int("code", 0),
-			skipAuthenticated: opts.Bool("skip_authenticated", true),
+			skipAuthenticated: opts.Bool("skip_authenticated", false),
+			failClosed:        opts.Bool("fail_closed", true),
 			logger:            bc.Logger,
 		}
 		if p.window <= 0 {
 			p.window = time.Hour
 		}
 		switch p.scope {
-		case "ip", "auth", "sender", "ip+sender":
+		case "ip", "auth", "sender", "ip+sender", "smart":
 		default:
-			return nil, fmt.Errorf("scope must be ip, auth, sender or ip+sender")
+			return nil, fmt.Errorf("scope must be ip, auth, sender, ip+sender or smart")
 		}
 		for _, raw := range opts.Strings("trusted_networks") {
 			_, n, err := net.ParseCIDR(raw)
@@ -64,6 +65,7 @@ type Plugin struct {
 	action            string
 	code              int
 	skipAuthenticated bool
+	failClosed        bool
 	trusted           []*net.IPNet
 	logger            *slog.Logger
 }
@@ -93,7 +95,10 @@ func (p *Plugin) Run(ctx context.Context, hook plugin.Hook, tx *plugin.Tx) (plug
 	count, err := p.store.Incr(ctx, key, p.window)
 	if err != nil {
 		if p.logger != nil {
-			p.logger.Warn("rate limit store error; allowing message", "error", err)
+			p.logger.Warn("rate limit store error", "error", err, "fail_closed", p.failClosed)
+		}
+		if p.failClosed {
+			return plugin.TempFail(451, "4.7.1 Rate limit service unavailable"), nil
 		}
 		return plugin.OK(), nil
 	}
@@ -123,6 +128,11 @@ func (p *Plugin) keyValue(tx *plugin.Tx) string {
 		ip = tx.RemoteIP.String()
 	}
 	switch p.scope {
+	case "smart":
+		if tx.AuthUser != "" {
+			return "auth:" + strings.ToLower(tx.AuthUser)
+		}
+		return "ip:" + ip + "|" + plugin.NormalizeAddress(tx.MailFrom)
 	case "auth":
 		if tx.AuthUser != "" {
 			return tx.AuthUser

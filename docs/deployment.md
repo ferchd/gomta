@@ -18,6 +18,12 @@ Before accepting real mail:
 - Enable at least one spam control (DNSBL, rspamd, or greylisting) and monitor
   its decisions before enabling rejection.
 - Configure backups for the queue, configuration, TLS keys, and DKIM keys.
+- Provision every local mailbox in users.txt or explicitly configure recipient
+  validation/aliases before accepting public MX traffic.
+- Review Maildir mailbox/domain quota limits and provision adequate disk capacity.
+- Use verified TLS for authenticated outbound SMTP relays (`required` or `implicit`).
+- Enable external DSNs only if you have a trusted inbound sender policy;
+  authenticated submission DSNs are enabled by default for new configurations.
 - Confirm outbound port 25 is allowed by the hosting provider, or configure a
   smarthost.
 
