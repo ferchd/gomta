@@ -132,7 +132,9 @@ func (p *Plugin) keyValue(tx *plugin.Tx) string {
 		if tx.AuthUser != "" {
 			return "auth:" + strings.ToLower(tx.AuthUser)
 		}
-		return "ip:" + ip + "|" + plugin.NormalizeAddress(tx.MailFrom)
+		// Unauthenticated clients control MAIL FROM; aggregate solely by IP
+		// so rotating sender addresses cannot reset the abuse budget.
+		return "ip:" + ip
 	case "auth":
 		if tx.AuthUser != "" {
 			return tx.AuthUser

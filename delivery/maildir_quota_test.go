@@ -50,3 +50,15 @@ func TestMaildirCachedDomainUsage(t *testing.T) {
 		t.Fatalf("reconciliation did not detect change: %d", q.used)
 	}
 }
+
+func TestMaildirCanonicalizesCaseInsensitiveMailbox(t *testing.T) {
+	b := &maildirBackend{root: t.TempDir(), maxMailboxBytes: 1 << 20, maxDomainBytes: 1 << 22, quotas: make(map[string]*maildirQuota)}
+	msg := &Message{ID: "same-mailbox", Data: []byte("From: test@example.test\r\n\r\nHello\r\n")}
+	if err := b.deliverOne("Alice@Example.Test", msg); err != nil { t.Fatal(err) }
+	if err := b.deliverOne("alice@example.test", msg); err != nil { t.Fatal(err) }
+	entries, err := os.ReadDir(filepath.Join(b.root, "example.test"))
+	if err != nil { t.Fatal(err) }
+	if len(entries) != 1 || entries[0].Name() != "alice" {
+		t.Fatalf("expected only canonical alice mailbox, got %+v", entries)
+	}
+}

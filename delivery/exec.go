@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"time"
 
+	"github.com/ferchd/gomta/internal/boundedio"
 	"github.com/ferchd/gomta/plugin"
 )
 
@@ -76,8 +77,8 @@ func (b *execBackend) Deliver(ctx context.Context, m *Message) map[string]error 
 	cmd := exec.CommandContext(runCtx, b.command, b.args...)
 	cmd.Dir = b.dir
 	cmd.Stdin = bytes.NewReader(payload)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
+	stderr := &boundedio.Truncate{Max: 64 << 10}
+	cmd.Stderr = stderr
 	if err := cmd.Run(); err != nil {
 		var e error
 		var exitErr *exec.ExitError
