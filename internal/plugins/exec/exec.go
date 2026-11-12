@@ -34,6 +34,7 @@ func init() {
 			rejectMessage:   opts.String("reject_message", "Message rejected by content filter"),
 			tempfailMessage: opts.String("tempfail_message", "Content filter temporarily unavailable, try again"),
 			logger:          bc.Logger,
+			budget:          bc.Budget,
 		}
 		if p.timeout <= 0 {
 			p.timeout = 30 * time.Second
@@ -61,6 +62,7 @@ type Plugin struct {
 	rejectMessage   string
 	tempfailMessage string
 	logger          *slog.Logger
+	budget          *plugin.ByteBudget
 }
 
 // Name implements plugin.Plugin.
@@ -81,8 +83,10 @@ func (p *Plugin) Run(ctx context.Context, hook plugin.Hook, tx *plugin.Tx) (plug
 	cmd := exec.CommandContext(runCtx, p.command, p.args...)
 	cmd.Stdin = bytes.NewReader(tx.Data)
 	cmd.Env = append(os.Environ(), p.environment(hook, tx)...)
-	stdout := &boundedio.Capture{Max: p.maxOutput}
-	stderr := &boundedio.Truncate{Max: 64 << 10}
+	stdout := &boundedio.Capture{Max: p.maxOutput, Context: runCtx, Budget: p.budget}
+	stderr := &boundedio.Truncate{Max: 64 << 10, Context: runCtx, Budget: p.budget}
+	defer stdout.Close()
+	defer stderr.Close()
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 	cmd.WaitDelay = 5 * time.Second
