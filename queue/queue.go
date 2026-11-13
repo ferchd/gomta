@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"os"
@@ -89,6 +90,7 @@ type Router interface {
 // Config configures the queue manager.
 type Config struct {
 	Dir             string
+	MaxMessageBytes int64 // safety ceiling for legacy and corrupt on-disk payloads
 	Workers         int
 	MaxAttempts     int
 	MaxAge          time.Duration
@@ -126,6 +128,9 @@ func New(cfg Config, router Router) (*Manager, error) {
 	}
 	if cfg.Dir == "" {
 		return nil, errors.New("queue: dir is required")
+	}
+	if cfg.MaxMessageBytes <= 0 {
+		cfg.MaxMessageBytes = 25 << 20
 	}
 	if cfg.Workers <= 0 {
 		cfg.Workers = 4
@@ -199,10 +204,17 @@ func (m *Manager) Enqueue(ctx context.Context, env *Envelope, msg []byte) error 
 	env.PayloadSize = int64(len(msg))
 	env.PayloadSHA256 = hex.EncodeToString(sum[:])
 	jsonPath, msgPath := m.paths(env.ID)
-	if err := atomicWrite(msgPath, msg, 0o600); err != nil {
-		return fmt.Errorf("queue: write message: %w", err)
+	// An envelope without its payload may be in recovery. Never reuse the ID
+	// and silently attach a new message to an already accepted envelope.
+	if _, err := os.Stat(jsonPath); err == nil {
+		return fmt.Errorf("queue: envelope ID %q already exists: %w", env.ID, os.ErrExist)
+	} else if !os.IsNotExist(err) {
+		return err
 	}
-	if err := atomicWrite(jsonPath, mustJSON(env), 0o600); err != nil {
+	if err := atomicCreateExclusive(msgPath, msg, 0o600); err != nil {
+		return fmt.Errorf("queue: publish new message: %w", err)
+	}
+	if err := atomicCreateExclusive(jsonPath, mustJSON(env), 0o600); err != nil {
 		// The orphan .eml is not visible to workers without its envelope.
 		return fmt.Errorf("queue: write envelope: %w", err)
 	}
@@ -350,11 +362,9 @@ func (m *Manager) scan(ctx context.Context) bool {
 			healthy = false
 			m.logger.Error("queue: notify failed recipients", "id", env.ID, "error", err)
 		}
-		if len(env.Pending()) == 0 {
-			m.finish(&env, nil)
-			continue
-		}
-		if !env.NextAttempt.IsZero() && env.NextAttempt.After(now) {
+		// Completed envelopes still require payload-integrity validation before
+		// archival. Schedule them through the same worker path.
+		if len(env.Pending()) > 0 && !env.NextAttempt.IsZero() && env.NextAttempt.After(now) {
 			if env.NextAttempt.Before(nextDue) {
 				nextDue = env.NextAttempt
 			}
@@ -383,13 +393,13 @@ func (m *Manager) scan(ctx context.Context) bool {
 }
 
 func (m *Manager) process(ctx context.Context, env *Envelope) {
-	jsonPath, msgPath := m.paths(env.ID)
-	msg, err := os.ReadFile(msgPath)
+	jsonPath, _ := m.paths(env.ID)
+	msg, err := m.readVerifiedPayload(env)
 	if err != nil {
-		m.logger.Error("queue: cannot read message", "id", env.ID, "error", err)
-		if os.IsNotExist(err) {
-			if qerr := m.quarantineMissingPayload(env, err); qerr != nil {
-				m.logger.Error("queue: quarantine missing payload failed", "id", env.ID, "error", qerr)
+		m.logger.Error("queue: cannot validate message", "id", env.ID, "error", err)
+		if os.IsNotExist(err) || errors.Is(err, errPayloadCorrupt) {
+			if qerr := m.quarantineUnrecoverablePayload(env, err.Error(), nil); qerr != nil {
+				m.logger.Error("queue: quarantine invalid payload failed", "id", env.ID, "error", qerr)
 			}
 			return
 		}
@@ -397,17 +407,6 @@ func (m *Manager) process(ctx context.Context, env *Envelope) {
 		env.NextAttempt = time.Now().Add(m.retryDelay(env.Attempts))
 		_ = atomicWrite(jsonPath, mustJSON(env), 0o600)
 		return
-	}
-	// Old queue entries without an integrity digest remain compatible.
-	// New entries must match both their committed size and SHA-256.
-	if env.PayloadSHA256 != "" {
-		sum := sha256.Sum256(msg)
-		if int64(len(msg)) != env.PayloadSize || !strings.EqualFold(hex.EncodeToString(sum[:]), env.PayloadSHA256) {
-			if qerr := m.quarantineUnrecoverablePayload(env, "payload size or SHA-256 differs from committed envelope", msg); qerr != nil {
-				m.logger.Error("queue: preserve corrupt payload failed", "id", env.ID, "error", qerr)
-			}
-			return
-		}
 	}
 	if len(env.Pending()) == 0 {
 		m.finish(env, msg)
@@ -566,12 +565,12 @@ func (m *Manager) finish(env *Envelope, msg []byte) {
 	if len(failed) > 0 {
 		if msg == nil {
 			var err error
-			msg, err = os.ReadFile(msgPath)
+			msg, err = m.readVerifiedPayload(env)
 			if err != nil {
-				m.logger.Error("queue: missing failed message payload", "id", env.ID, "error", err)
-				if os.IsNotExist(err) {
-					if qerr := m.quarantineMissingPayload(env, err); qerr != nil {
-						m.logger.Error("queue: quarantine missing archived payload failed", "id", env.ID, "error", qerr)
+				m.logger.Error("queue: cannot validate payload before archival", "id", env.ID, "error", err)
+				if os.IsNotExist(err) || errors.Is(err, errPayloadCorrupt) {
+					if qerr := m.quarantineUnrecoverablePayload(env, err.Error(), nil); qerr != nil {
+						m.logger.Error("queue: quarantine unarchivable payload failed", "id", env.ID, "error", qerr)
 					}
 				}
 				return
@@ -619,10 +618,13 @@ func SaveQuarantine(dataDir string, env *Envelope, msg []byte) error {
 	if env.ID == "" {
 		env.ID = NewID()
 	}
-	if err := atomicWrite(filepath.Join(dir, env.ID+".eml"), msg, 0o600); err != nil {
+	if strings.ContainsAny(env.ID, `/\\`) || strings.Contains(env.ID, "..") {
+		return errors.New("queue: unsafe quarantine envelope ID")
+	}
+	if err := atomicCreateExclusive(filepath.Join(dir, env.ID+".eml"), msg, 0o600); err != nil {
 		return err
 	}
-	return atomicWrite(filepath.Join(dir, env.ID+".json"), mustJSON(env), 0o600)
+	return atomicCreateExclusive(filepath.Join(dir, env.ID+".json"), mustJSON(env), 0o600)
 }
 
 // Stats reports queued, failed, and quarantined message counts.
@@ -1014,10 +1016,11 @@ func (m *Manager) quarantineUnrecoverablePayload(env *Envelope, reason string, p
 	if err := os.MkdirAll(badDir, 0o700); err != nil {
 		return err
 	}
-	if payload != nil {
-		if err := atomicWrite(filepath.Join(badDir, env.ID+".eml"), payload, 0o600); err != nil {
-			return err
-		}
+	// Retain the original without copying untrusted file sizes into RAM.
+	// Linking the inode into corrupt/ is atomic and does not allocate disk
+	// space proportional to a potentially oversized corrupted payload.
+	if err := m.preserveCorruptPayload(env.ID, badDir, payload); err != nil {
+		return err
 	}
 	for i := range env.Recipients {
 		if env.Recipients[i].Status == "pending" || env.Recipients[i].Status == "" {
@@ -1058,14 +1061,8 @@ func (m *Manager) quarantineCorruptBytes(id string, raw []byte, reason string) e
 	// A malformed envelope may still refer to an intact payload. Preserve
 	// that content before removing the visibility marker: the orphan cleaner
 	// would otherwise discard the original .eml after its grace interval.
-	msgPath := filepath.Join(m.cfg.Dir, id+".eml")
-	msg, err := os.ReadFile(msgPath)
-	if err == nil {
-		if err := atomicWrite(filepath.Join(badDir, id+".eml"), msg, 0o600); err != nil {
-			return err
-		}
-	} else if !os.IsNotExist(err) {
-		return fmt.Errorf("preserve payload of corrupt envelope: %w", err)
+	if err := m.preserveCorruptPayload(id, badDir, nil); err != nil {
+		return err
 	}
 	return os.Remove(filepath.Join(m.cfg.Dir, id+".json"))
 }
@@ -1134,4 +1131,95 @@ func validateEnvelope(filenameID string, env *Envelope) error {
 		}
 	}
 	return nil
+}
+
+
+// errPayloadCorrupt distinguishes content integrity failures from transient
+// filesystem errors and stops delivery before any external side effects.
+var errPayloadCorrupt = errors.New("queue: payload integrity violation")
+
+// readVerifiedPayload never reads an oversized on-disk file into memory.
+// Even a historic envelope without a checksum is bounded by MaxMessageBytes.
+// For modern envelopes, stream the digest before materializing the payload.
+func (m *Manager) readVerifiedPayload(env *Envelope) ([]byte, error) {
+	_, path := m.paths(env.ID)
+	f, err := os.Open(path)
+	if err != nil { return nil, err }
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil { return nil, err }
+	if !info.Mode().IsRegular() { return nil, fmt.Errorf("%w: not a regular file", errPayloadCorrupt) }
+	if info.Size() > m.cfg.MaxMessageBytes {
+		return nil, fmt.Errorf("%w: payload size %d exceeds %d", errPayloadCorrupt, info.Size(), m.cfg.MaxMessageBytes)
+	}
+	if env.PayloadSHA256 != "" {
+		if info.Size() != env.PayloadSize {
+			return nil, fmt.Errorf("%w: committed size %d differs from file size %d", errPayloadCorrupt, env.PayloadSize, info.Size())
+		}
+		hash := sha256.New()
+		n, err := io.Copy(hash, io.LimitReader(f, m.cfg.MaxMessageBytes+1))
+		if err != nil { return nil, err }
+		if n != env.PayloadSize || !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), env.PayloadSHA256) {
+			return nil, fmt.Errorf("%w: payload SHA-256 mismatch", errPayloadCorrupt)
+		}
+		if _, err := f.Seek(0, io.SeekStart); err != nil { return nil, err }
+	}
+	msg, err := io.ReadAll(io.LimitReader(f, m.cfg.MaxMessageBytes+1))
+	if err != nil { return nil, err }
+	if int64(len(msg)) > m.cfg.MaxMessageBytes {
+		return nil, fmt.Errorf("%w: payload grew during read", errPayloadCorrupt)
+	}
+	if env.PayloadSHA256 != "" {
+		sum := sha256.Sum256(msg)
+		if int64(len(msg)) != env.PayloadSize || !strings.EqualFold(hex.EncodeToString(sum[:]), env.PayloadSHA256) {
+			return nil, fmt.Errorf("%w: payload changed during read", errPayloadCorrupt)
+		}
+	}
+	return msg, nil
+}
+
+// preserveCorruptPayload retains the same immutable content under corrupt/.
+// An existing destination must be the same file; never overwrite evidence.
+func (m *Manager) preserveCorruptPayload(id, badDir string, fallback []byte) error {
+	src := filepath.Join(m.cfg.Dir, id+".eml")
+	dst := filepath.Join(badDir, id+".eml")
+	if err := os.Link(src, dst); err != nil {
+		if os.IsNotExist(err) {
+			if fallback == nil { return nil }
+			return atomicCreateExclusive(dst, fallback, 0o600)
+		}
+		if !os.IsExist(err) { return fmt.Errorf("preserve corrupt payload: %w", err) }
+		a, aErr := os.Stat(src)
+		b, bErr := os.Stat(dst)
+		if aErr != nil || bErr != nil || !os.SameFile(a, b) {
+			return fmt.Errorf("corrupt payload already exists for different message: %w", os.ErrExist)
+		}
+	}
+	return syncQueueDirectory(badDir)
+}
+
+// atomicCreateExclusive publishes new spool files without ever replacing an
+// existing ID. A unique fsynced temporary file is linked atomically into
+// the namespace, then its directory is synced on POSIX. Existing envelopes
+// still use atomicWrite for their validated state transitions.
+func atomicCreateExclusive(path string, data []byte, mode os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil { return err }
+	tmp, err := os.CreateTemp(dir, ".tmp-*")
+	if err != nil { return err }
+	defer os.Remove(tmp.Name())
+	if err := tmp.Chmod(mode); err != nil { _ = tmp.Close(); return err }
+	if _, err := tmp.Write(data); err != nil { _ = tmp.Close(); return err }
+	if err := tmp.Sync(); err != nil { _ = tmp.Close(); return err }
+	if err := tmp.Close(); err != nil { return err }
+	if err := os.Link(tmp.Name(), path); err != nil { return err }
+	return syncQueueDirectory(dir)
+}
+
+func syncQueueDirectory(dir string) error {
+	if runtime.GOOS == "windows" { return nil }
+	f, err := os.Open(dir)
+	if err != nil { return err }
+	defer f.Close()
+	return f.Sync()
 }

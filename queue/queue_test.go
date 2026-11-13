@@ -508,3 +508,58 @@ func TestScanSchedulesNextRetryWithoutTwoSecondFullWalks(t *testing.T) {
 		t.Fatalf("unexpected next retry scheduling interval: %s", delay)
 	}
 }
+
+func TestEnqueueDuplicateIDIsRejectedWithoutReplacingFiles(t *testing.T) {
+	m, err := New(Config{Dir:t.TempDir()}, testRouter{})
+	if err != nil {t.Fatal(err)}
+	first:=&Envelope{ID:"unique",From:"alice@example.test",Recipients:[]Recipient{{Address:"bob@example.test"}}}
+	if err:=m.Enqueue(context.Background(),first,[]byte("first message"));err!=nil {t.Fatal(err)}
+	second:=&Envelope{ID:"unique",From:"eve@example.test",Recipients:[]Recipient{{Address:"bob@example.test"}}}
+	if err:=m.Enqueue(context.Background(),second,[]byte("replacement"));!errors.Is(err,os.ErrExist) {t.Fatalf("duplicate not rejected: %v",err)}
+	payload,err:=m.readVerifiedPayload(first)
+	if err!=nil || string(payload)!="first message" {t.Fatalf("original was altered: %v %s",err,payload)}
+}
+
+func TestEnqueueRejectsEnvelopeMissingPayload(t *testing.T) {
+	m,err:=New(Config{Dir:t.TempDir()},testRouter{})
+	if err!=nil {t.Fatal(err)}
+	env:=&Envelope{ID:"missing",From:"alice@example.test",Recipients:[]Recipient{{Address:"bob@example.test"}}}
+	if err:=atomicWrite(filepath.Join(m.cfg.Dir,"missing.json"),mustJSON(env),0o600);err!=nil {t.Fatal(err)}
+	if err:=m.Enqueue(context.Background(),env,[]byte("new"));!errors.Is(err,os.ErrExist) {t.Fatalf("accepted orphan ID: %v",err)}
+	if _,err:=os.Stat(filepath.Join(m.cfg.Dir,"missing.eml"));!os.IsNotExist(err) {t.Fatalf("payload created on an already visible ID: %v",err)}
+}
+
+func TestFinishedMessageCannotArchiveCorruptedPayload(t *testing.T) {
+	m,err:=New(Config{Dir:t.TempDir()},testRouter{})
+	if err!=nil {t.Fatal(err)}
+	env:=&Envelope{ID:"finished-corrupt",From:"alice@example.test",Recipients:[]Recipient{{Address:"bob@example.test",Status:"failed"}}}
+	if err:=m.Enqueue(context.Background(),env,[]byte("good"));err!=nil {t.Fatal(err)}
+	if err:=atomicWrite(filepath.Join(m.cfg.Dir,env.ID+".eml"),[]byte("bad"),0o600);err!=nil {t.Fatal(err)}
+	m.process(context.Background(),env)
+	if _,err:=os.Stat(filepath.Join(m.cfg.Dir,"failed",env.ID+".json"));!os.IsNotExist(err) {t.Fatalf("corruption archived as valid: %v",err)}
+	for _,suffix:=range []string{".json",".eml",".reason"} {
+		if _,err:=os.Stat(filepath.Join(m.cfg.Dir,"corrupt",env.ID+suffix));err!=nil {t.Fatalf("missing preserved evidence %s: %v",suffix,err)}
+	}
+}
+
+func TestOversizedCorruptPayloadDoesNotReadIntoMemory(t *testing.T) {
+	m,err:=New(Config{Dir:t.TempDir(),MaxMessageBytes:1024},testRouter{})
+	if err!=nil {t.Fatal(err)}
+	env:=&Envelope{ID:"oversized",From:"alice@example.test",Recipients:[]Recipient{{Address:"bob@example.test"}}}
+	if err:=m.Enqueue(context.Background(),env,[]byte("original"));err!=nil {t.Fatal(err)}
+	file,err:=os.OpenFile(filepath.Join(m.cfg.Dir,env.ID+".eml"),os.O_WRONLY,0)
+	if err!=nil {t.Fatal(err)}
+	if err:=file.Truncate(64<<20);err!=nil {t.Fatal(err)}
+	if err:=file.Close();err!=nil {t.Fatal(err)}
+	if _,err:=m.readVerifiedPayload(env);!errors.Is(err,errPayloadCorrupt) {t.Fatalf("oversize not rejected before read: %v",err)}
+	m.process(context.Background(),env)
+	if info,err:=os.Stat(filepath.Join(m.cfg.Dir,"corrupt",env.ID+".eml"));err!=nil || info.Size()!=64<<20 {t.Fatalf("corrupt sparse payload not preserved: %v",err)}
+}
+
+func TestLegacyMessageUsesSizeCeiling(t *testing.T) {
+	m,err:=New(Config{Dir:t.TempDir(),MaxMessageBytes:10},testRouter{})
+	if err!=nil {t.Fatal(err)}
+	env:=&Envelope{ID:"legacy",From:"alice@example.test",Recipients:[]Recipient{{Address:"bob@example.test"}}}
+	if err:=atomicWrite(filepath.Join(m.cfg.Dir,"legacy.eml"),[]byte("0123456789012345"),0o600);err!=nil {t.Fatal(err)}
+	if _,err:=m.readVerifiedPayload(env);!errors.Is(err,errPayloadCorrupt){t.Fatalf("legacy limit bypassed: %v",err)}
+}
