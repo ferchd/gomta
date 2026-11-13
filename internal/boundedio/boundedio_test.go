@@ -51,3 +51,13 @@ func TestConcurrentCapturesShareBudget(t *testing.T) {
 	}
 	second.Close()
 }
+
+func TestCaptureNeverAllocatesBeyondMaximumCapacity(t *testing.T) {
+	c:=&Capture{Max:10}
+	for _,data:=range []string{"123","456","7890"} {
+		if _,err:=c.Write([]byte(data));err!=nil {t.Fatal(err)}
+		if cap(c.Bytes())>c.Max {t.Fatalf("capacity %d exceeds Max %d",cap(c.Bytes()),c.Max)}
+	}
+	if string(c.Bytes())!="1234567890" {t.Fatalf("unexpected output %q",c.Bytes())}
+	if _,err:=c.Write([]byte("x"));!errors.Is(err,ErrLimitExceeded) {t.Fatalf("limit not enforced: %v",err)}
+}

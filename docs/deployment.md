@@ -505,3 +505,19 @@ GoMTA loads certificates at startup. Restart the service after renewal.
   successful ownership and an initial durable spool readiness check.
 - Real recovery guarantees require failure-injection tests and live SMTP
   interoperability checks in addition to the unit test matrix.
+
+ 
+## Sixth audit: storage recovery and sizing
+
+- Treat a malformed or mismatched queue envelope as a quarantine event:
+  inspect the recorded `.envelope`, `.eml` and `.reason` files before
+  attempting repair. Never edit an envelope ID to point at another payload.
+- Back up `.json` and `.eml` together. The SHA-256 checksum is an integrity
+  detector, not a cryptographic authenticity signature.
+- Size plugin memory for the sum of copied SMTP DATA and worst-case filtered
+  subprocess output. Reservations stay active while their transformed body
+  is in use and release at the end of DATA processing. The Go runtime may
+  temporarily allocate additional memory while copying buffers.
+- Maildir stale `tmp/` files are candidates for removal after a 24-hour
+  recovery grace. Avoid modifying the same Maildir with multiple independent
+  writers; external writers require their own coordination.

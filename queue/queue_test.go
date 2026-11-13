@@ -447,3 +447,12 @@ func TestPayloadCorruptionIsQuarantinedBeforeDelivery(t *testing.T) {
 	}
 	if _,err:=os.Stat(filepath.Join(m.cfg.Dir,env.ID+".json"));!os.IsNotExist(err) {t.Fatalf("corrupt message remains active: %v",err)}
 }
+
+func TestLegacyEnvelopeWithoutDigestRemainsReadable(t *testing.T) {
+	legacy:=&Envelope{ID:"old-mail",From:"alice@example.test",Recipients:[]Recipient{{Address:"bob@example.test",Status:"pending"}}}
+	if err:=validateEnvelope("old-mail",legacy);err!=nil {t.Fatal(err)}
+}
+func TestInvalidEnvelopeRecipientStateIsRejected(t *testing.T) {
+	env:=&Envelope{ID:"malformed",From:"alice@example.test",Recipients:[]Recipient{{Address:"bob@example.test",Status:"unknown"}}}
+	if err:=validateEnvelope("malformed",env);err==nil {t.Fatal("invalid recipient state accepted")}
+}

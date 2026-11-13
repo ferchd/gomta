@@ -543,3 +543,27 @@ SMTP DATA grows its memory reservations progressively as bytes arrive
 instead of reserving the entire configured maximum for every small message.
 This accounts for retained input buffers rather than every temporary
 allocation by Go, TLS, content filters, or delivery workers.
+
+ 
+## Sixth audit: integrity and memory ownership
+
+Newly queued messages commit both `payload_size` and `payload_sha256` into
+their durable JSON envelopes. The worker checks both before attempting
+delivery; a mismatch is preserved with the raw payload in `queue/corrupt/`
+for manual recovery. Legacy queue envelopes without a checksum continue
+working, but cannot benefit from this integrity check. The scanner rejects
+envelopes whose embedded IDs do not match the physical filename before
+executing any delivery, DSN or archival action.
+
+Plugin runners now pre-admit the entire maximum subprocess stdout/stderr
+working set *together* with an input DATA snapshot, avoiding the circular
+wait caused by nested memory acquisitions. A returned transformed body keeps
+its memory lease until it is replaced or its SMTP DATA transaction ends.
+A filter with `max_output_bytes` larger than the available execution budget
+will not start; lower this option or increase the configured budget.
+
+Stale Maildir `tmp/` files older than 24 hours are removed conservatively
+during mailbox delivery and quota reconciliation. Recent temporary writes
+are preserved. Mailbox lock entries are released when idle; retries can
+still perform a linear lookup in `cur/` when searching for an already read
+message.
