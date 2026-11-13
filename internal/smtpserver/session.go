@@ -332,6 +332,7 @@ func (s *session) Data(r io.Reader) error {
 	s.tx.Size = int64(len(data))
 	s.tx.Header = parseHeader(data)
 	if s.isAuthed() {
+		s.tx.SetSenderPolicy(s.senderAuthorized)
 		fromValues := s.tx.Header.Values("From")
 		if len(fromValues) != 1 {
 			return smtpError(553, 5, 7, 1, "Exactly one From header is required")
@@ -359,9 +360,13 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	if headers := s.tx.TakeHeaders(); len(headers) > 0 {
-		s.tx.ApplyHeaders(headers)
+		if err := s.tx.ApplyHeaders(headers); err != nil {
+			return smtpError(451, 4, 3, 1, "Unable to reserve header memory")
+		}
 	}
-	s.tx.ApplyHeaders([]plugin.Header{receivedHeader(s.tx)})
+	if err := s.tx.ApplyHeaders([]plugin.Header{receivedHeader(s.tx)}); err != nil {
+		return smtpError(451, 4, 3, 1, "Unable to reserve trace header memory")
+	}
 	if s.tx.Size > max {
 		return smtpError(552, 5, 3, 4, "Message exceeds maximum size after adding headers")
 	}
@@ -382,7 +387,12 @@ func (s *session) Data(r io.Reader) error {
 		return s.quarantineAndAccept(fmt.Sprintf("quarantined at queue: %s", res.Decision.Message))
 	}
 	if headers := s.tx.TakeHeaders(); len(headers) > 0 {
-		s.tx.ApplyHeaders(headers)
+		if err := s.tx.ApplyHeaders(headers); err != nil {
+			return smtpError(451, 4, 3, 1, "Unable to reserve queue header memory")
+		}
+	}
+	if s.isAuthed() && !s.tx.ValidSender() {
+		return smtpError(553, 5, 7, 1, "Final From header is not authorized for this account")
 	}
 	if s.tx.Size > max {
 		return smtpError(552, 5, 3, 4, "Message exceeds maximum size after queue headers")
