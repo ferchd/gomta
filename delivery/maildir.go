@@ -46,6 +46,9 @@ type maildirBackend struct {
 	mu              sync.Mutex // protects quotas, not all deliveries
 	quotas          map[string]*maildirQuota
 	mailboxLocks    map[string]*mailboxLock // removed once no deliveries use the mailbox
+	cacheMu         sync.Mutex
+	recentDelivery  map[string]struct{}
+	recentOrder     []string // bounded FIFO, speeds up same-process retries
 	maxMailboxBytes int64
 	maxDomainBytes  int64
 }
@@ -90,11 +93,15 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 	defer unlock()
 	name := maildirMessageName(m.ID, domain, local)
 	if name != "" {
+		// Successful recent deliveries remain idempotent even if a mail
+		// reader has already moved/consumed their Maildir file.
+		if m.Attempt > 1 && b.wasRecentlyDelivered(box, name) { return nil }
 		present, err := maildirHasMessage(box, name, m.Attempt != 1)
 		if err != nil {
 			return Temp(fmt.Errorf("check Maildir delivery identity: %w", err))
 		}
 		if present {
+			b.rememberDelivery(box, name)
 			return nil
 		}
 	}
@@ -197,6 +204,7 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 			return Temp(fmt.Errorf("sync maildir directory: %w", err))
 		}
 	}
+	if m.ID != "" { b.rememberDelivery(box, name) }
 	return nil
 }
 
@@ -428,4 +436,31 @@ func cleanStaleMaildirTemp(dir string, cutoff time.Time) error {
 		}
 	}
 	return nil
+}
+
+
+// The recent-success cache is advisory and deliberately bounded: after
+// process restart or eviction, the durable new/cur lookup remains authoritative.
+const maxRecentMaildirDeliveries = 4096
+
+func (b *maildirBackend) wasRecentlyDelivered(box, name string) bool {
+	key := box + "\x00" + name
+	b.cacheMu.Lock()
+	_,ok := b.recentDelivery[key]
+	b.cacheMu.Unlock()
+	return ok
+}
+
+func (b *maildirBackend) rememberDelivery(box, name string) {
+	key := box + "\x00" + name
+	b.cacheMu.Lock()
+	defer b.cacheMu.Unlock()
+	if b.recentDelivery == nil { b.recentDelivery = make(map[string]struct{}) }
+	if _,ok:=b.recentDelivery[key];ok {return}
+	if len(b.recentOrder)>=maxRecentMaildirDeliveries {
+		delete(b.recentDelivery,b.recentOrder[0])
+		b.recentOrder=b.recentOrder[1:]
+	}
+	b.recentDelivery[key]=struct{}{}
+	b.recentOrder=append(b.recentOrder,key)
 }

@@ -521,3 +521,13 @@ GoMTA loads certificates at startup. Restart the service after renewal.
 - Maildir stale `tmp/` files are candidates for removal after a 24-hour
   recovery grace. Avoid modifying the same Maildir with multiple independent
   writers; external writers require their own coordination.
+
+ 
+## Maildir retry indexing
+
+The backend keeps a bounded in-process cache of 4,096 confirmed delivery
+identities. Retries of recently confirmed local messages avoid a full scan of
+`cur/`, even if a mailbox reader moved or consumed the original message.
+The cache is only an optimization. After restart or eviction, GoMTA falls
+back to the exact `new/` lookup and, on retries, the `cur/` directory scan.
+It does not replace an on-disk exactly-once transaction log.
