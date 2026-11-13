@@ -45,13 +45,18 @@ type maildirBackend struct {
 	hostname        string
 	mu              sync.Mutex // protects quotas, not all deliveries
 	quotas          map[string]*maildirQuota
-	mailboxLocks    sync.Map // canonical Maildir directory -> *sync.Mutex
+	mailboxLocks    map[string]*mailboxLock // removed once no deliveries use the mailbox
 	maxMailboxBytes int64
 	maxDomainBytes  int64
 }
 
 // maildirQuota is scoped to one domain, so different domains can deliver
 // concurrently without rescanning the entire tree on every message.
+type mailboxLock struct {
+	mu   sync.Mutex
+	refs int
+}
+
 type maildirQuota struct {
 	mu        sync.Mutex
 	used      int64
@@ -81,10 +86,8 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 	box := filepath.Join(domainPath, safeComponent(local))
 	// Serialize only this mailbox: retries and concurrent deliveries of the
 	// same queue ID must not create two distinct message files.
-	lock, _ := b.mailboxLocks.LoadOrStore(box, &sync.Mutex{})
-	mailboxLock := lock.(*sync.Mutex)
-	mailboxLock.Lock()
-	defer mailboxLock.Unlock()
+	unlock := b.lockMailbox(box)
+	defer unlock()
 	name := maildirMessageName(m.ID, domain, local)
 	if name != "" {
 		present, err := maildirHasMessage(box, name, m.Attempt != 1)
@@ -149,6 +152,11 @@ func (b *maildirBackend) deliverOne(rcpt string, m *Message) error {
 		if err := os.MkdirAll(filepath.Join(box, sub), 0o700); err != nil {
 			return Temp(fmt.Errorf("create maildir: %w", err))
 		}
+	}
+	// Maildir tmp/ is not a delivered mailbox. Remove only files older than
+	// one day; cleanup is serialized with deliveries to the same mailbox.
+	if err := cleanStaleMaildirTemp(filepath.Join(box, "tmp"), time.Now().Add(-24*time.Hour)); err != nil {
+		return Temp(fmt.Errorf("clean Maildir temporary files: %w", err))
 	}
 	host := b.hostname
 	if host == "" {
@@ -306,6 +314,12 @@ func (q *maildirQuota) reconcile(domainPath string) error {
 		if err != nil {
 			return err
 		}
+		if parts[1] == "tmp" && info.ModTime().Before(time.Now().Add(-24*time.Hour)) {
+			// Domain quota is reconciled only when no in-process deliveries
+			// are in-flight. Do not count or retain abandoned tmp payloads.
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) { return err }
+			return nil
+		}
 		used += info.Size()
 		mailboxes[parts[0]] += info.Size()
 		return nil
@@ -358,4 +372,42 @@ func maildirHasMessage(box, name string, scanCur bool) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+// lockMailbox reference-counts per-mailbox mutexes. Retire idle mutexes so
+// many one-off destinations cannot grow the in-process registry indefinitely.
+func (b *maildirBackend) lockMailbox(path string) func() {
+	b.mu.Lock()
+	if b.mailboxLocks == nil { b.mailboxLocks = make(map[string]*mailboxLock) }
+	entry := b.mailboxLocks[path]
+	if entry == nil {
+		entry = &mailboxLock{}
+		b.mailboxLocks[path] = entry
+	}
+	entry.refs++
+	b.mu.Unlock()
+	entry.mu.Lock()
+	return func() {
+		entry.mu.Unlock()
+		b.mu.Lock()
+		entry.refs--
+		if entry.refs == 0 { delete(b.mailboxLocks, path) }
+		b.mu.Unlock()
+	}
+}
+
+// cleanStaleMaildirTemp is called only under the mailbox lock. It does not
+// remove files updated within the recovery grace period.
+func cleanStaleMaildirTemp(dir string, cutoff time.Time) error {
+	entries, err := os.ReadDir(dir)
+	if os.IsNotExist(err) { return nil }
+	if err != nil { return err }
+	for _, item := range entries {
+		if !item.Type().IsRegular() { continue }
+		info, err := item.Info()
+		if err != nil { return err }
+		if !info.ModTime().Before(cutoff) { continue }
+		if err := os.Remove(filepath.Join(dir, item.Name())); err != nil && !os.IsNotExist(err) { return err }
+	}
+	return nil
 }

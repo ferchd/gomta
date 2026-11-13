@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestMaildirUsageSumsNestedMailbox(t *testing.T) {
@@ -167,4 +168,37 @@ func TestFirstAttemptSkipsCurScanAndRetryFindsMaildirFlags(t *testing.T) {
 	if err != nil || len(files) != 0 {
 		t.Fatalf("retry duplicated already-read mail: %v %+v", err, files)
 	}
+}
+
+func TestMaildirRemovesStaleTempFilesAndRecoversQuota(t *testing.T) {
+	root:=t.TempDir()
+	box:=filepath.Join(root,"example.test","alice")
+	tmp:=filepath.Join(box,"tmp")
+	if err:=os.MkdirAll(tmp,0o700);err!=nil {t.Fatal(err)}
+	stale:=filepath.Join(tmp,"crashed-write")
+	recent:=filepath.Join(tmp,"in-progress")
+	for _,name:=range []string{stale,recent} {
+		if err:=os.WriteFile(name,[]byte("abandoned"),0o600);err!=nil {t.Fatal(err)}
+	}
+	past:=time.Now().Add(-48*time.Hour)
+	if err:=os.Chtimes(stale,past,past);err!=nil {t.Fatal(err)}
+	b:=&maildirBackend{root:root, maxMailboxBytes:128,maxDomainBytes:256, quotas:map[string]*maildirQuota{}}
+	msg:=&Message{ID:"after-crash",Data:[]byte("hello")}
+	if err:=b.deliverOne("alice@example.test",msg);err!=nil {t.Fatal(err)}
+	if _,err:=os.Stat(stale);!os.IsNotExist(err) {t.Fatalf("stale tmp remains: %v",err)}
+	if _,err:=os.Stat(recent);err!=nil {t.Fatalf("recent tmp removed: %v",err)}
+	q:=b.quotaFor("example.test")
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.used <= 0 || q.used > 256 {t.Fatalf("invalid reconciled usage: %d",q.used)}
+}
+func TestMaildirRetiresUnusedMailboxLocks(t *testing.T) {
+	b:=&maildirBackend{root:t.TempDir(),quotas:make(map[string]*maildirQuota)}
+	for i:=0;i<20;i++ {
+		msg:=&Message{ID:fmt.Sprintf("id-%d",i),Data:[]byte("Hello")}
+		if err:=b.deliverOne(fmt.Sprintf("mailbox%d@example.test",i),msg);err!=nil {t.Fatal(err)}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.mailboxLocks)!=0 {t.Fatalf("idle lock registry contains %d entries",len(b.mailboxLocks))}
 }
