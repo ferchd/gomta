@@ -180,6 +180,9 @@ func (m *Manager) Enqueue(ctx context.Context, env *Envelope, msg []byte) error 
 	if env == nil {
 		return errors.New("queue: nil envelope")
 	}
+	if int64(len(msg)) > m.cfg.MaxMessageBytes {
+		return fmt.Errorf("queue: message size %d exceeds %d", len(msg), m.cfg.MaxMessageBytes)
+	}
 	if env.ID == "" {
 		env.ID = NewID()
 	}
@@ -204,6 +207,19 @@ func (m *Manager) Enqueue(ctx context.Context, env *Envelope, msg []byte) error 
 	env.PayloadSize = int64(len(msg))
 	env.PayloadSHA256 = hex.EncodeToString(sum[:])
 	jsonPath, msgPath := m.paths(env.ID)
+	// An archived or corrupt ID is still reserved: reusing it could overwrite
+	// a failed archive or corrupt evidence during a later state transition.
+	for _, path := range []string{
+		filepath.Join(m.cfg.Dir, "failed", env.ID+".json"),
+		filepath.Join(m.cfg.Dir, "failed", env.ID+".eml"),
+		filepath.Join(m.cfg.Dir, "corrupt", env.ID+".reason"),
+	} {
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("queue: archived ID %q already exists: %w", env.ID, os.ErrExist)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
 	// An envelope without its payload may be in recovery. Never reuse the ID
 	// and silently attach a new message to an already accepted envelope.
 	if _, err := os.Stat(jsonPath); err == nil {

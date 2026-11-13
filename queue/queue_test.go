@@ -633,3 +633,33 @@ func TestCorruptStatsCountDiagnosticMarkers(t *testing.T) {
 		t.Fatalf("incorrect corrupt stats: count=%d age=%s", count, age)
 	}
 }
+
+func TestEnqueueCannotReuseArchivedMessageID(t *testing.T) {
+	m, err := New(Config{Dir: t.TempDir()}, testRouter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(m.cfg.Dir, "failed"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(m.cfg.Dir, "failed", "archived.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env := &Envelope{ID: "archived", From: "alice@example.test", Recipients: []Recipient{{Address: "bob@example.test"}}}
+	if err := m.Enqueue(context.Background(), env, []byte("different")); !errors.Is(err, os.ErrExist) {
+		t.Fatalf("archived message ID was reused: %v", err)
+	}
+}
+func TestEnqueueRejectsOversizedPayloadBeforePublication(t *testing.T) {
+	m, err := New(Config{Dir: t.TempDir(), MaxMessageBytes: 1024}, testRouter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &Envelope{ID: "too-big", From: "alice@example.test", Recipients: []Recipient{{Address: "bob@example.test"}}}
+	if err := m.Enqueue(context.Background(), env, make([]byte, 1025)); err == nil {
+		t.Fatal("accepted payload larger than queue limit")
+	}
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, "too-big.eml")); !os.IsNotExist(err) {
+		t.Fatalf("oversized payload was published: %v", err)
+	}
+}
