@@ -222,7 +222,9 @@ func (t *Tx) SetBody(data []byte, lease *BodyLease) {
 // ApplyHeaders preserves the output lease while constructing a replacement
 // header-prefixed buffer. The reservation remains charged until Tx.Close.
 func (t *Tx) ApplyHeaders(headers []Header) {
-	if len(headers)>0 { t.SetBody(PrependHeaders(t.Data, headers), t.bodyLease) }
+	if len(headers) > 0 {
+		t.SetBody(PrependHeaders(t.Data, headers), t.bodyLease)
+	}
 }
 
 // Close releases retained output and drops DATA when a transaction ends.
