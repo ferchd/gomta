@@ -388,30 +388,40 @@ func TestPrepaidConcurrentFiltersMakeProgressWithoutCircularWait(t *testing.T) {
 }
 
 func TestBufferAdmissionCannotFailOpen(t *testing.T) {
-	p:=&prepaidBodyPlugin{limit:100,bodySize:8}
-	r:=newTestRunner(t,map[Hook][]entry{HookData:{testEntry(p,0,0)}})
-	r.budget=NewByteBudget(96)
-	p.budget=r.budget
-	tx:=NewTx()
-	tx.Data=make([]byte,40)
-	out:=r.Run(context.Background(),HookData,tx)
-	if out.Decision.Action!=ActionTempFail {t.Fatalf("resource admission failed open: %+v",out)}
+	p := &prepaidBodyPlugin{limit: 100, bodySize: 8}
+	r := newTestRunner(t, map[Hook][]entry{HookData: {testEntry(p, 0, 0)}})
+	r.budget = NewByteBudget(96)
+	p.budget = r.budget
+	tx := NewTx()
+	tx.Data = make([]byte, 40)
+	out := r.Run(context.Background(), HookData, tx)
+	if out.Decision.Action != ActionTempFail {
+		t.Fatalf("resource admission failed open: %+v", out)
+	}
 	tx.Close()
 }
 func TestPrependingHeadersDoesNotReleaseRetainedOutput(t *testing.T) {
-	b:=NewByteBudget(128)
-	if err:=b.Acquire(context.Background(),32);err!=nil {t.Fatal(err)}
-	tx:=NewTx()
-	tx.SetBody([]byte("Subject: test\r\n\r\nmessage"),&BodyLease{budget:b,size:32})
-	tx.ApplyHeaders([]Header{{Name:"X-Test",Value:"1"}})
+	b := NewByteBudget(128)
+	if err := b.Acquire(context.Background(), 32); err != nil {
+		t.Fatal(err)
+	}
+	tx := NewTx()
+	tx.SetBody([]byte("Subject: test\r\n\r\nmessage"), &BodyLease{budget: b, size: 32})
+	tx.ApplyHeaders([]Header{{Name: "X-Test", Value: "1"}})
 	b.mu.Lock()
-	used:=b.used
+	used := b.used
 	b.mu.Unlock()
-	if used!=32 {t.Fatalf("headers released output while still in use: %d",used)}
-	if !strings.HasPrefix(string(tx.Data),"X-Test: 1") {t.Fatalf("headers missing: %q",tx.Data)}
+	if used != 32 {
+		t.Fatalf("headers released output while still in use: %d", used)
+	}
+	if !strings.HasPrefix(string(tx.Data), "X-Test: 1") {
+		t.Fatalf("headers missing: %q", tx.Data)
+	}
 	tx.Close()
 	b.mu.Lock()
-	used=b.used
+	used = b.used
 	b.mu.Unlock()
-	if used!=0 {t.Fatalf("body lease leaked after Close: %d",used)}
+	if used != 0 {
+		t.Fatalf("body lease leaked after Close: %d", used)
+	}
 }
