@@ -317,7 +317,9 @@ func (q *maildirQuota) reconcile(domainPath string) error {
 		if parts[1] == "tmp" && info.ModTime().Before(time.Now().Add(-24*time.Hour)) {
 			// Domain quota is reconciled only when no in-process deliveries
 			// are in-flight. Do not count or retain abandoned tmp payloads.
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) { return err }
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return err
+			}
 			return nil
 		}
 		used += info.Size()
@@ -378,7 +380,9 @@ func maildirHasMessage(box, name string, scanCur bool) (bool, error) {
 // many one-off destinations cannot grow the in-process registry indefinitely.
 func (b *maildirBackend) lockMailbox(path string) func() {
 	b.mu.Lock()
-	if b.mailboxLocks == nil { b.mailboxLocks = make(map[string]*mailboxLock) }
+	if b.mailboxLocks == nil {
+		b.mailboxLocks = make(map[string]*mailboxLock)
+	}
 	entry := b.mailboxLocks[path]
 	if entry == nil {
 		entry = &mailboxLock{}
@@ -391,7 +395,9 @@ func (b *maildirBackend) lockMailbox(path string) func() {
 		entry.mu.Unlock()
 		b.mu.Lock()
 		entry.refs--
-		if entry.refs == 0 { delete(b.mailboxLocks, path) }
+		if entry.refs == 0 {
+			delete(b.mailboxLocks, path)
+		}
 		b.mu.Unlock()
 	}
 }
@@ -400,14 +406,26 @@ func (b *maildirBackend) lockMailbox(path string) func() {
 // remove files updated within the recovery grace period.
 func cleanStaleMaildirTemp(dir string, cutoff time.Time) error {
 	entries, err := os.ReadDir(dir)
-	if os.IsNotExist(err) { return nil }
-	if err != nil { return err }
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
 	for _, item := range entries {
-		if !item.Type().IsRegular() { continue }
+		if !item.Type().IsRegular() {
+			continue
+		}
 		info, err := item.Info()
-		if err != nil { return err }
-		if !info.ModTime().Before(cutoff) { continue }
-		if err := os.Remove(filepath.Join(dir, item.Name())); err != nil && !os.IsNotExist(err) { return err }
+		if err != nil {
+			return err
+		}
+		if !info.ModTime().Before(cutoff) {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, item.Name())); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
 	return nil
 }

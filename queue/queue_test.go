@@ -408,61 +408,103 @@ func TestCleanupAncillarySpoolDirectories(t *testing.T) {
 
 func TestScanQuarantinesMismatchedIDWithoutTouchingAnotherMessage(t *testing.T) {
 	m, err := New(Config{Dir: t.TempDir()}, testRouter{})
-	if err != nil { t.Fatal(err) }
-	b := &Envelope{ID: "message-B", From:"alice@example.test", Recipients: []Recipient{{Address:"bob@example.test", Status:"pending"}}}
-	if err := m.Enqueue(context.Background(), b, []byte("original B")); err != nil { t.Fatal(err) }
-	a := *b
-	a.Recipients = []Recipient{{Address:"bob@example.test",Status:"delivered"}}
-	if err := atomicWrite(filepath.Join(m.cfg.Dir, "message-A.json"), mustJSON(&a), 0o600); err != nil { t.Fatal(err) }
-	if err := atomicWrite(filepath.Join(m.cfg.Dir, "message-A.eml"), []byte("original A"), 0o600); err != nil { t.Fatal(err) }
-	m.scan(context.Background())
-	for _, ext := range []string{".json",".eml"} {
-		if _,err := os.Stat(filepath.Join(m.cfg.Dir,"message-B"+ext));err!=nil { t.Fatalf("other message destroyed: %v",err) }
+	if err != nil {
+		t.Fatal(err)
 	}
-	raw,err:=os.ReadFile(filepath.Join(m.cfg.Dir,"corrupt","message-A.envelope"))
-	if err!=nil {t.Fatal(err)}
-	if !strings.Contains(string(raw), "message-B") {t.Fatalf("original corrupt record not retained: %s",raw)}
-	data,err:=os.ReadFile(filepath.Join(m.cfg.Dir,"corrupt","message-A.eml"))
-	if err!=nil || string(data)!="original A" {t.Fatalf("corrupt payload not retained: %v %q",err,data)}
+	b := &Envelope{ID: "message-B", From: "alice@example.test", Recipients: []Recipient{{Address: "bob@example.test", Status: "pending"}}}
+	if err := m.Enqueue(context.Background(), b, []byte("original B")); err != nil {
+		t.Fatal(err)
+	}
+	a := *b
+	a.Recipients = []Recipient{{Address: "bob@example.test", Status: "delivered"}}
+	if err := atomicWrite(filepath.Join(m.cfg.Dir, "message-A.json"), mustJSON(&a), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWrite(filepath.Join(m.cfg.Dir, "message-A.eml"), []byte("original A"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.scan(context.Background())
+	for _, ext := range []string{".json", ".eml"} {
+		if _, err := os.Stat(filepath.Join(m.cfg.Dir, "message-B"+ext)); err != nil {
+			t.Fatalf("other message destroyed: %v", err)
+		}
+	}
+	raw, err := os.ReadFile(filepath.Join(m.cfg.Dir, "corrupt", "message-A.envelope"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "message-B") {
+		t.Fatalf("original corrupt record not retained: %s", raw)
+	}
+	data, err := os.ReadFile(filepath.Join(m.cfg.Dir, "corrupt", "message-A.eml"))
+	if err != nil || string(data) != "original A" {
+		t.Fatalf("corrupt payload not retained: %v %q", err, data)
+	}
 }
 
 func TestScanRejectsUnsafeEmbeddedID(t *testing.T) {
-	m,err:=New(Config{Dir:t.TempDir()},testRouter{})
-	if err!=nil {t.Fatal(err)}
-	env:=&Envelope{ID:"../failed/other",From:"alice@example.test",Recipients:[]Recipient{{Address:"bob@example.test",Status:"delivered"}}}
-	if err:=atomicWrite(filepath.Join(m.cfg.Dir,"unsafe.json"),mustJSON(env),0o600);err!=nil {t.Fatal(err)}
+	m, err := New(Config{Dir: t.TempDir()}, testRouter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &Envelope{ID: "../failed/other", From: "alice@example.test", Recipients: []Recipient{{Address: "bob@example.test", Status: "delivered"}}}
+	if err := atomicWrite(filepath.Join(m.cfg.Dir, "unsafe.json"), mustJSON(env), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	m.scan(context.Background())
-	if _,err:=os.Stat(filepath.Join(m.cfg.Dir,"corrupt","unsafe.envelope"));err!=nil {t.Fatal(err)}
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, "corrupt", "unsafe.envelope")); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestPayloadCorruptionIsQuarantinedBeforeDelivery(t *testing.T) {
-	m,err:=New(Config{Dir:t.TempDir()},testRouter{})
-	if err!=nil {t.Fatal(err)}
-	env:=&Envelope{ID:"payload-truncated",From:"alice@example.test",Recipients:[]Recipient{{Address:"bob@example.test",Status:"pending"}}}
-	if err:=m.Enqueue(context.Background(),env,[]byte("complete message body"));err!=nil {t.Fatal(err)}
-	if err:=atomicWrite(filepath.Join(m.cfg.Dir,env.ID+".eml"),[]byte("short"),0o600);err!=nil {t.Fatal(err)}
-	m.process(context.Background(),env)
-	for _,ext:=range []string{".json",".eml",".reason"} {
-		if _,err:=os.Stat(filepath.Join(m.cfg.Dir,"corrupt",env.ID+ext));err!=nil {t.Fatalf("missing preserved %s: %v",ext,err)}
+	m, err := New(Config{Dir: t.TempDir()}, testRouter{})
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _,err:=os.Stat(filepath.Join(m.cfg.Dir,env.ID+".json"));!os.IsNotExist(err) {t.Fatalf("corrupt message remains active: %v",err)}
+	env := &Envelope{ID: "payload-truncated", From: "alice@example.test", Recipients: []Recipient{{Address: "bob@example.test", Status: "pending"}}}
+	if err := m.Enqueue(context.Background(), env, []byte("complete message body")); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicWrite(filepath.Join(m.cfg.Dir, env.ID+".eml"), []byte("short"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.process(context.Background(), env)
+	for _, ext := range []string{".json", ".eml", ".reason"} {
+		if _, err := os.Stat(filepath.Join(m.cfg.Dir, "corrupt", env.ID+ext)); err != nil {
+			t.Fatalf("missing preserved %s: %v", ext, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(m.cfg.Dir, env.ID+".json")); !os.IsNotExist(err) {
+		t.Fatalf("corrupt message remains active: %v", err)
+	}
 }
 
 func TestLegacyEnvelopeWithoutDigestRemainsReadable(t *testing.T) {
-	legacy:=&Envelope{ID:"old-mail",From:"alice@example.test",Recipients:[]Recipient{{Address:"bob@example.test",Status:"pending"}}}
-	if err:=validateEnvelope("old-mail",legacy);err!=nil {t.Fatal(err)}
+	legacy := &Envelope{ID: "old-mail", From: "alice@example.test", Recipients: []Recipient{{Address: "bob@example.test", Status: "pending"}}}
+	if err := validateEnvelope("old-mail", legacy); err != nil {
+		t.Fatal(err)
+	}
 }
 func TestInvalidEnvelopeRecipientStateIsRejected(t *testing.T) {
-	env:=&Envelope{ID:"malformed",From:"alice@example.test",Recipients:[]Recipient{{Address:"bob@example.test",Status:"unknown"}}}
-	if err:=validateEnvelope("malformed",env);err==nil {t.Fatal("invalid recipient state accepted")}
+	env := &Envelope{ID: "malformed", From: "alice@example.test", Recipients: []Recipient{{Address: "bob@example.test", Status: "unknown"}}}
+	if err := validateEnvelope("malformed", env); err == nil {
+		t.Fatal("invalid recipient state accepted")
+	}
 }
 
 func TestScanSchedulesNextRetryWithoutTwoSecondFullWalks(t *testing.T) {
-	m,err:=New(Config{Dir:t.TempDir()},testRouter{})
-	if err!=nil {t.Fatal(err)}
-	env:=&Envelope{ID:"scheduled",From:"alice@example.test",NextAttempt:time.Now().Add(25*time.Second),Recipients:[]Recipient{{Address:"bob@example.test",Status:"pending"}}}
-	if err:=m.Enqueue(context.Background(),env,[]byte("mail"));err!=nil {t.Fatal(err)}
+	m, err := New(Config{Dir: t.TempDir()}, testRouter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &Envelope{ID: "scheduled", From: "alice@example.test", NextAttempt: time.Now().Add(25 * time.Second), Recipients: []Recipient{{Address: "bob@example.test", Status: "pending"}}}
+	if err := m.Enqueue(context.Background(), env, []byte("mail")); err != nil {
+		t.Fatal(err)
+	}
 	m.scan(context.Background())
-	delay:=time.Until(time.Unix(0,m.nextScan.Load()))
-	if delay < 20*time.Second || delay > 30*time.Second {t.Fatalf("unexpected next retry scheduling interval: %s",delay)}
+	delay := time.Until(time.Unix(0, m.nextScan.Load()))
+	if delay < 20*time.Second || delay > 30*time.Second {
+		t.Fatalf("unexpected next retry scheduling interval: %s", delay)
+	}
 }
