@@ -143,6 +143,7 @@ type Outcome struct {
 	Meta map[string]any
 	// Tags are diagnostic labels, e.g. "spam" or "dkim-verified".
 	Tags []string
+	bodyLease *BodyLease // follows retained Body when applied
 }
 
 // Header is a single RFC 5322 header field.
@@ -192,9 +193,10 @@ type Tx struct {
 	ServerName   string
 	Arrived      time.Time
 
-	mu      sync.RWMutex
-	meta    map[string]any
-	headers []Header
+	mu        sync.RWMutex
+	meta      map[string]any
+	headers   []Header
+	bodyLease *BodyLease
 }
 
 // NewTx returns an empty transaction.
@@ -205,6 +207,22 @@ func NewTx() *Tx {
 		meta:    make(map[string]any),
 	}
 }
+
+// SetBody transfers an optional retained output lease. Replacing the body
+// releases the old buffer reservation once the replacement is ready.
+func (t *Tx) SetBody(data []byte, lease *BodyLease) {
+	if t.bodyLease != nil && t.bodyLease != lease { t.bodyLease.Release() }
+	t.bodyLease = lease
+	t.Data = data
+	t.Size = int64(len(data))
+}
+
+// Close releases retained output and drops DATA when a transaction ends.
+func (t *Tx) Close() { t.SetBody(nil, nil) }
+
+// OutputReservation declares maximum retained subprocess output. The runner
+// acquires it together with the DATA snapshot, preventing nested deadlocks.
+type OutputReservation interface { OutputReservationBytes() int64 }
 
 // SetMeta stores a value shared with later hooks and plugins.
 func (t *Tx) SetMeta(key string, value any) {

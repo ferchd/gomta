@@ -221,12 +221,15 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 
 	// Phase 1: run independent plugins concurrently.
 	if len(concurrent) > 0 {
-		results := make(chan PluginResult, len(concurrent))
+		results := make(chan PluginResult)
 		for _, ie := range concurrent {
 			go func(ie indexedEntry) {
 				pr := r.runOne(runCtx, ie, hook, tx)
 				pr.index = ie.index
-				results <- pr
+				select {
+				case results <- pr:
+				case <-runCtx.Done(): pr.Outcome.releaseBodyLease()
+				}
 			}(ie)
 		}
 		deadline := runCtx.Done()
@@ -251,8 +254,7 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 	// ordered plugins (especially DKIM signers) can see them.
 	if len(ordered) > 0 {
 		if hs := tx.TakeHeaders(); len(hs) > 0 {
-			tx.Data = PrependHeaders(tx.Data, hs)
-			tx.Size = int64(len(tx.Data))
+			tx.SetBody(PrependHeaders(tx.Data, hs), nil)
 		}
 	}
 
@@ -265,9 +267,13 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 		// The ordered timeout is enforced independently of the overall hook
 		// timeout. A misbehaving plugin only retains an isolated snapshot.
 		individualCtx, stop := context.WithTimeout(runCtx, ie.timeout)
-		done := make(chan PluginResult, 1)
+		done := make(chan PluginResult)
 		go func(ie indexedEntry) {
-			done <- r.runOne(individualCtx, ie, hook, tx)
+			pr := r.runOne(individualCtx, ie, hook, tx)
+			select {
+			case done <- pr:
+			case <-individualCtx.Done(): pr.Outcome.releaseBodyLease()
+			}
 		}(ie)
 		var pr PluginResult
 		select {
@@ -283,8 +289,8 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 		}
 		pr.index = ie.index
 		r.enforceBodyLimit(tx, &pr)
-		res.Outcomes = append(res.Outcomes, pr)
 		r.applyOutcome(tx, &pr, true)
+		res.Outcomes = append(res.Outcomes, pr)
 	}
 
 	res.Duration = time.Since(start)
@@ -341,12 +347,25 @@ func (r *Runner) runOne(ctx context.Context, ie indexedEntry, hook Hook, tx *Tx)
 	}
 	pluginCtx, pluginCancel := context.WithTimeout(ctx, ie.timeout)
 	defer pluginCancel()
-	// Bound the combined size of private DATA snapshots across active plugins.
-	if err := r.reserveSnapshot(pluginCtx, int64(len(tx.Data))); err != nil {
+	// Admit input snapshot and maximum output as ONE reservation before
+	// running the filter. No process waits for stdout while holding a
+	// partially admitted output allocation.
+	snapshotSize := int64(len(tx.Data))
+	var outputLimit int64
+	if provider, ok := ie.plugin.(OutputReservation); ok {
+		outputLimit = provider.OutputReservationBytes()
+		if outputLimit < 0 || outputLimit > int64(^uint64(0)>>1)-snapshotSize {
+			pr.Err = ErrBudgetExceeded
+			return
+		}
+	}
+	if err := r.reserveSnapshot(pluginCtx, snapshotSize+outputLimit); err != nil {
 		pr.Err = err
 		return
 	}
-	defer r.releaseSnapshot(int64(len(tx.Data)))
+	defer r.releaseSnapshot(snapshotSize)
+	retainOutput := false
+	defer func() { if !retainOutput { r.releaseSnapshot(outputLimit) } }()
 	// No plugin receives the parent transaction. Even a callback that ignores
 	// cancellation can only mutate its isolated snapshot.
 	local := snapshotTx(tx)
@@ -356,6 +375,7 @@ func (r *Runner) runOne(ctx context.Context, ie indexedEntry, hook Hook, tx *Tx)
 		if rec := recover(); rec != nil {
 			pr.Err = fmt.Errorf("panic: %v", rec)
 		}
+		if pr.Err != nil { pr.Outcome.releaseBodyLease() }
 		pr.Duration = time.Since(started)
 		if pr.Err == nil {
 			pr.meta = changedMeta(before, cloneMetaSnapshot(local.MetaSnapshot()))
@@ -365,6 +385,17 @@ func (r *Runner) runOne(ctx context.Context, ie indexedEntry, hook Hook, tx *Tx)
 	pr.Outcome, pr.Err = ie.plugin.Run(pluginCtx, hook, local)
 	if pr.Err == nil && pluginCtx.Err() != nil {
 		pr.Err = pluginCtx.Err()
+	}
+	if pr.Err == nil && pr.Outcome.Body != nil && outputLimit > 0 {
+		retained := int64(cap(pr.Outcome.Body))
+		if retained > outputLimit {
+			pr.Err = ErrBudgetExceeded
+			return
+		}
+		// The bounded capture never grows beyond its configured cap.
+		r.releaseSnapshot(outputLimit - retained)
+		pr.Outcome.bodyLease = &BodyLease{budget: r.budget, size: retained}
+		retainOutput = true
 	}
 	return
 }
@@ -418,6 +449,7 @@ func (r *Runner) applyOutcome(tx *Tx, pr *PluginResult, immediate bool) {
 		if pr.Err == context.DeadlineExceeded || pr.Err == context.Canceled {
 			level = slog.LevelDebug
 		}
+		pr.Outcome.releaseBodyLease()
 		r.logger.Log(context.Background(), level, "plugin error", "plugin", pr.Name, "hook", pr.Hook, "error", pr.Err, "duration", pr.Duration)
 		return
 	}
@@ -431,8 +463,7 @@ func (r *Runner) applyOutcome(tx *Tx, pr *PluginResult, immediate bool) {
 		r.logger.Debug("plugin decision", "plugin", pr.Name, "hook", pr.Hook, "action", pr.Outcome.Action, "code", pr.Outcome.Code, "message", pr.Outcome.Message, "duration", pr.Duration)
 	}
 	if immediate && len(outcome.Headers) > 0 {
-		tx.Data = PrependHeaders(tx.Data, outcome.Headers)
-		tx.Size = int64(len(tx.Data))
+		tx.SetBody(PrependHeaders(tx.Data, outcome.Headers), nil)
 	} else {
 		for _, h := range outcome.Headers {
 			tx.AddHeader(h.Name, h.Value)
@@ -445,9 +476,10 @@ func (r *Runner) applyOutcome(tx *Tx, pr *PluginResult, immediate bool) {
 		tx.SetMeta("tag."+tag, true)
 	}
 	if outcome.Body != nil {
-		tx.Data = outcome.Body
-		tx.Size = int64(len(outcome.Body))
+		tx.SetBody(outcome.Body, pr.Outcome.bodyLease)
+		pr.Outcome.bodyLease = nil
 	}
+	pr.Outcome.releaseBodyLease()
 }
 
 func sortResults(results []PluginResult) {
@@ -567,6 +599,7 @@ func (r *Runner) enforceBodyLimit(tx *Tx, pr *PluginResult) {
 		return
 	}
 	if int64(len(pr.Outcome.Body)) > tx.MaxBodyBytes {
+		pr.Outcome.releaseBodyLease()
 		pr.Outcome = TempFail(451, "4.3.1 Content filter exceeded maximum message size")
 		pr.meta = nil
 		pr.headers = nil

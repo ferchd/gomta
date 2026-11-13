@@ -34,13 +34,12 @@ func init() {
 			rejectMessage:   opts.String("reject_message", "Message rejected by content filter"),
 			tempfailMessage: opts.String("tempfail_message", "Content filter temporarily unavailable, try again"),
 			logger:          bc.Logger,
-			budget:          bc.Budget,
 		}
 		if p.timeout <= 0 {
 			p.timeout = 30 * time.Second
 		}
-		if p.maxOutput <= 0 {
-			return nil, fmt.Errorf("max_output_bytes must be greater than zero")
+		if p.maxOutput <= 0 || p.maxOutput > int(^uint(0)>>1)-(64<<10) {
+			return nil, fmt.Errorf("max_output_bytes must fit a positive bounded reservation")
 		}
 		p.acceptCodes = intList(opts, "accept_codes", []int{0})
 		p.tempfailCodes = intList(opts, "tempfail_codes", []int{75})
@@ -62,7 +61,6 @@ type Plugin struct {
 	rejectMessage   string
 	tempfailMessage string
 	logger          *slog.Logger
-	budget          *plugin.ByteBudget
 }
 
 // Name implements plugin.Plugin.
@@ -75,6 +73,9 @@ func (p *Plugin) Hooks() []plugin.Hook { return []plugin.Hook{plugin.HookData} }
 // and its body replacement is applied in order.
 func (p *Plugin) RunOrdered() bool { return true }
 
+// OutputReservationBytes is the entire bounded stdout/stderr working set.
+func (p *Plugin) OutputReservationBytes() int64 { return int64(p.maxOutput) + (64 << 10) }
+
 // Run implements plugin.Plugin.
 func (p *Plugin) Run(ctx context.Context, hook plugin.Hook, tx *plugin.Tx) (plugin.Outcome, error) {
 	runCtx, cancel := context.WithTimeout(ctx, p.timeout)
@@ -83,8 +84,8 @@ func (p *Plugin) Run(ctx context.Context, hook plugin.Hook, tx *plugin.Tx) (plug
 	cmd := exec.CommandContext(runCtx, p.command, p.args...)
 	cmd.Stdin = bytes.NewReader(tx.Data)
 	cmd.Env = append(os.Environ(), p.environment(hook, tx)...)
-	stdout := &boundedio.Capture{Max: p.maxOutput, Context: runCtx, Budget: p.budget}
-	stderr := &boundedio.Truncate{Max: 64 << 10, Context: runCtx, Budget: p.budget}
+	stdout := &boundedio.Capture{Max: p.maxOutput}
+	stderr := &boundedio.Truncate{Max: 64 << 10}
 	defer stdout.Close()
 	defer stderr.Close()
 	cmd.Stdout = stdout

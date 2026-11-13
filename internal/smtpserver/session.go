@@ -88,6 +88,7 @@ func (s *session) resetMessage() {
 	var preserved map[string]any
 	if s.tx != nil {
 		preserved = s.tx.MetaSnapshot()
+		s.tx.Close()
 	}
 	tx := plugin.NewTx()
 	for k, v := range preserved {
@@ -309,6 +310,8 @@ func (s *session) Data(r io.Reader) error {
 	if !s.mailSet || len(s.tx.RcptTo) == 0 {
 		return smtpError(503, 5, 5, 1, "Need RCPT command first")
 	}
+	activeTx := s.tx
+	defer activeTx.Close()
 	max := s.lis.MaxMessageBytes
 	if max <= 0 {
 		max = s.srv.cfg.Limits.MaxMessageBytes
@@ -356,11 +359,9 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	if headers := s.tx.TakeHeaders(); len(headers) > 0 {
-		s.tx.Data = plugin.PrependHeaders(s.tx.Data, headers)
-		s.tx.Size = int64(len(s.tx.Data))
+		s.tx.SetBody(plugin.PrependHeaders(s.tx.Data, headers), nil)
 	}
-	s.tx.Data = plugin.PrependHeaders(s.tx.Data, []plugin.Header{receivedHeader(s.tx)})
-	s.tx.Size = int64(len(s.tx.Data))
+	s.tx.SetBody(plugin.PrependHeaders(s.tx.Data, []plugin.Header{receivedHeader(s.tx)}), nil)
 	if s.tx.Size > max {
 		return smtpError(552, 5, 3, 4, "Message exceeds maximum size after adding headers")
 	}
@@ -381,8 +382,7 @@ func (s *session) Data(r io.Reader) error {
 		return s.quarantineAndAccept(fmt.Sprintf("quarantined at queue: %s", res.Decision.Message))
 	}
 	if headers := s.tx.TakeHeaders(); len(headers) > 0 {
-		s.tx.Data = plugin.PrependHeaders(s.tx.Data, headers)
-		s.tx.Size = int64(len(s.tx.Data))
+		s.tx.SetBody(plugin.PrependHeaders(s.tx.Data, headers), nil)
 	}
 	if s.tx.Size > max {
 		return smtpError(552, 5, 3, 4, "Message exceeds maximum size after queue headers")
