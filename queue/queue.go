@@ -116,6 +116,7 @@ type Manager struct {
 	inflight map[string]bool
 	wg       sync.WaitGroup
 	ready    atomic.Bool
+	nextScan atomic.Int64 // scheduler hint; full reconciliation at least once per minute
 }
 
 // New creates a queue manager. The spool directory is created lazily.
@@ -247,6 +248,9 @@ func (m *Manager) Start(ctx context.Context) error {
 			m.wg.Wait()
 			return nil
 		case <-ticker.C:
+			// Full directory walks are expensive with large deferred queues.
+			// Still reconcile every minute to detect external spool changes.
+			if deadline := m.nextScan.Load(); deadline > 0 && time.Now().UnixNano() < deadline { continue }
 			healthy = m.scan(ctx)
 			m.ready.Store(healthy && writable)
 		case <-m.wake:
@@ -269,6 +273,10 @@ func (m *Manager) worker(ctx context.Context) {
 			return
 		case env := <-m.jobs:
 			func() {
+				// Wake the scheduler after a job changes its on-disk state.
+				defer func() {
+					select { case m.wake <- struct{}{}: default: }
+				}()
 				defer func() {
 					m.mu.Lock()
 					delete(m.inflight, env.ID)
@@ -294,6 +302,7 @@ func (m *Manager) scan(ctx context.Context) bool {
 	}
 	healthy := true
 	now := time.Now()
+	nextDue := now.Add(time.Minute) // bounded periodic recovery scan
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
 			continue
@@ -313,9 +322,10 @@ func (m *Manager) scan(ctx context.Context) bool {
 		}
 		var env Envelope
 		if err := json.Unmarshal(raw, &env); err != nil {
-			healthy = false
 			m.logger.Error("queue: corrupt envelope", "id", id, "error", err)
 			if qerr := m.quarantineCorruptBytes(id, raw, "invalid envelope JSON: "+err.Error()); qerr != nil {
+				healthy = false
+				nextDue = now.Add(2*time.Second)
 				m.logger.Error("queue: preserve corrupt envelope failed", "id", id, "error", qerr)
 			}
 			continue
@@ -323,9 +333,10 @@ func (m *Manager) scan(ctx context.Context) bool {
 		// Never use an ID from persistent JSON to select a different file.
 		// Validate before DSN publication, routing, archival or deletion.
 		if err := validateEnvelope(id, &env); err != nil {
-			healthy = false
 			m.logger.Error("queue: invalid envelope", "id", id, "error", err)
 			if qerr := m.quarantineCorruptBytes(id, raw, "invalid envelope: "+err.Error()); qerr != nil {
+				healthy = false
+				nextDue = now.Add(2*time.Second)
 				m.logger.Error("queue: preserve invalid envelope failed", "id", id, "error", qerr)
 			}
 			continue
@@ -334,11 +345,12 @@ func (m *Manager) scan(ctx context.Context) bool {
 			healthy = false
 			m.logger.Error("queue: notify failed recipients", "id", env.ID, "error", err)
 		}
-		if !env.NextAttempt.IsZero() && env.NextAttempt.After(now) {
-			continue
-		}
 		if len(env.Pending()) == 0 {
 			m.finish(&env, nil)
+			continue
+		}
+		if !env.NextAttempt.IsZero() && env.NextAttempt.After(now) {
+			if env.NextAttempt.Before(nextDue) { nextDue = env.NextAttempt }
 			continue
 		}
 		m.mu.Lock()
@@ -356,8 +368,10 @@ func (m *Manager) scan(ctx context.Context) bool {
 			m.mu.Lock()
 			delete(m.inflight, id)
 			m.mu.Unlock()
+			nextDue = now.Add(2*time.Second) // jobs channel full; retry soon
 		}
 	}
+	m.nextScan.Store(nextDue.UnixNano())
 	return healthy
 }
 

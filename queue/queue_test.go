@@ -456,3 +456,13 @@ func TestInvalidEnvelopeRecipientStateIsRejected(t *testing.T) {
 	env:=&Envelope{ID:"malformed",From:"alice@example.test",Recipients:[]Recipient{{Address:"bob@example.test",Status:"unknown"}}}
 	if err:=validateEnvelope("malformed",env);err==nil {t.Fatal("invalid recipient state accepted")}
 }
+
+func TestScanSchedulesNextRetryWithoutTwoSecondFullWalks(t *testing.T) {
+	m,err:=New(Config{Dir:t.TempDir()},testRouter{})
+	if err!=nil {t.Fatal(err)}
+	env:=&Envelope{ID:"scheduled",From:"alice@example.test",NextAttempt:time.Now().Add(25*time.Second),Recipients:[]Recipient{{Address:"bob@example.test",Status:"pending"}}}
+	if err:=m.Enqueue(context.Background(),env,[]byte("mail"));err!=nil {t.Fatal(err)}
+	m.scan(context.Background())
+	delay:=time.Until(time.Unix(0,m.nextScan.Load()))
+	if delay < 20*time.Second || delay > 30*time.Second {t.Fatalf("unexpected next retry scheduling interval: %s",delay)}
+}
