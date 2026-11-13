@@ -429,45 +429,62 @@ func TestPrependingHeadersDoesNotReleaseRetainedOutput(t *testing.T) {
 }
 
 func TestOrderedBodyAndHeadersAreBothApplied(t *testing.T) {
-	transform:=&testPlugin{name:"both",hooks:[]Hook{HookData},ordered:true,run:func(_ context.Context,_ Hook,_ *Tx)(Outcome,error){
-		return Outcome{Action:ActionContinue,Body:[]byte("From: alice@example.test\r\n\r\nnew"),Headers:[]Header{{Name:"X-Filter",Value:"applied"}}},nil
+	transform := &testPlugin{name: "both", hooks: []Hook{HookData}, ordered: true, run: func(_ context.Context, _ Hook, _ *Tx) (Outcome, error) {
+		return Outcome{Action: ActionContinue, Body: []byte("From: alice@example.test\r\n\r\nnew"), Headers: []Header{{Name: "X-Filter", Value: "applied"}}}, nil
 	}}
-	r:=newTestRunner(t,map[Hook][]entry{HookData:{testEntry(transform,0,0)}})
-	tx:=NewTx()
-	tx.Data=[]byte("From: alice@example.test\r\n\r\nold")
-	res:=r.Run(context.Background(),HookData,tx)
-	if res.Rejected(){t.Fatalf("unexpected policy failure: %+v",res)}
-	if !strings.HasPrefix(string(tx.Data),"X-Filter: applied\r\n"){t.Fatalf("headers lost on replacement: %q",tx.Data)}
-	if !strings.HasSuffix(string(tx.Data),"new"){t.Fatalf("replacement lost: %q",tx.Data)}
+	r := newTestRunner(t, map[Hook][]entry{HookData: {testEntry(transform, 0, 0)}})
+	tx := NewTx()
+	tx.Data = []byte("From: alice@example.test\r\n\r\nold")
+	res := r.Run(context.Background(), HookData, tx)
+	if res.Rejected() {
+		t.Fatalf("unexpected policy failure: %+v", res)
+	}
+	if !strings.HasPrefix(string(tx.Data), "X-Filter: applied\r\n") {
+		t.Fatalf("headers lost on replacement: %q", tx.Data)
+	}
+	if !strings.HasSuffix(string(tx.Data), "new") {
+		t.Fatalf("replacement lost: %q", tx.Data)
+	}
 	tx.Close()
 }
 func TestUnauthorizedFromStopsOrderedSigner(t *testing.T) {
 	var signed bool
-	rewrite:=&testPlugin{name:"rewrite",hooks:[]Hook{HookQueue},ordered:true,run:func(_ context.Context,_ Hook,_ *Tx)(Outcome,error){
-		return Outcome{Action:ActionContinue,Body:[]byte("From: ceo@example.test\r\n\r\nspoof")},nil
+	rewrite := &testPlugin{name: "rewrite", hooks: []Hook{HookQueue}, ordered: true, run: func(_ context.Context, _ Hook, _ *Tx) (Outcome, error) {
+		return Outcome{Action: ActionContinue, Body: []byte("From: ceo@example.test\r\n\r\nspoof")}, nil
 	}}
-	sign:=&testPlugin{name:"sign",hooks:[]Hook{HookQueue},ordered:true,run:func(_ context.Context,_ Hook,_ *Tx)(Outcome,error){
-		signed=true;return OK(),nil
+	sign := &testPlugin{name: "sign", hooks: []Hook{HookQueue}, ordered: true, run: func(_ context.Context, _ Hook, _ *Tx) (Outcome, error) {
+		signed = true
+		return OK(), nil
 	}}
-	r:=newTestRunner(t,map[Hook][]entry{HookQueue:{testEntry(rewrite,0,0),testEntry(sign,1,0)}})
-	tx:=NewTx()
-	tx.Data=[]byte("From: alice@example.test\r\n\r\noriginal")
-	tx.SetSenderPolicy(func(from string)bool{return strings.EqualFold(from,"alice@example.test")})
-	out:=r.Run(context.Background(),HookQueue,tx)
-	if !out.Rejected(){t.Fatal("unauthorized From accepted")}
-	if signed {t.Fatal("later signer executed for unauthorized From")}
+	r := newTestRunner(t, map[Hook][]entry{HookQueue: {testEntry(rewrite, 0, 0), testEntry(sign, 1, 0)}})
+	tx := NewTx()
+	tx.Data = []byte("From: alice@example.test\r\n\r\noriginal")
+	tx.SetSenderPolicy(func(from string) bool { return strings.EqualFold(from, "alice@example.test") })
+	out := r.Run(context.Background(), HookQueue, tx)
+	if !out.Rejected() {
+		t.Fatal("unauthorized From accepted")
+	}
+	if signed {
+		t.Fatal("later signer executed for unauthorized From")
+	}
 	tx.Close()
 }
 func TestHeaderExpansionTracksRetainedCapacity(t *testing.T) {
-	budget:=NewByteBudget(256)
-	original:=[]byte("From: alice@example.test\r\n\r\nbody")
-	if err:=budget.Acquire(context.Background(),int64(len(original)));err!=nil {t.Fatal(err)}
-	tx:=NewTx()
-	tx.SetBody(original,&BodyLease{budget:budget,size:int64(len(original))})
-	if err:=tx.ApplyHeaders([]Header{{Name:"X-Test",Value:"added"}});err!=nil {t.Fatal(err)}
+	budget := NewByteBudget(256)
+	original := []byte("From: alice@example.test\r\n\r\nbody")
+	if err := budget.Acquire(context.Background(), int64(len(original))); err != nil {
+		t.Fatal(err)
+	}
+	tx := NewTx()
+	tx.SetBody(original, &BodyLease{budget: budget, size: int64(len(original))})
+	if err := tx.ApplyHeaders([]Header{{Name: "X-Test", Value: "added"}}); err != nil {
+		t.Fatal(err)
+	}
 	budget.mu.Lock()
-	charged:=budget.used
+	charged := budget.used
 	budget.mu.Unlock()
-	if charged!=int64(cap(tx.Data)){t.Fatalf("charged %d bytes for capacity %d",charged,cap(tx.Data))}
+	if charged != int64(cap(tx.Data)) {
+		t.Fatalf("charged %d bytes for capacity %d", charged, cap(tx.Data))
+	}
 	tx.Close()
 }

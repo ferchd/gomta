@@ -193,10 +193,10 @@ type Tx struct {
 	ServerName   string
 	Arrived      time.Time
 
-	mu        sync.RWMutex
-	meta      map[string]any
-	headers   []Header
-	bodyLease *BodyLease
+	mu           sync.RWMutex
+	meta         map[string]any
+	headers      []Header
+	bodyLease    *BodyLease
 	senderPolicy func(string) bool // parent-only authenticated sender validator
 }
 
@@ -223,10 +223,14 @@ func (t *Tx) SetBody(data []byte, lease *BodyLease) {
 // ApplyHeaders charges for both live buffers while prepending headers.
 // It replaces the old reservation only after the new buffer has been copied.
 func (t *Tx) ApplyHeaders(headers []Header) error {
-	if len(headers) == 0 { return nil }
+	if len(headers) == 0 {
+		return nil
+	}
 	prefixed := PrependHeaders([]byte{0}, headers)
 	prefix := prefixed[:len(prefixed)-1]
-	if len(prefix) == 0 { return nil }
+	if len(prefix) == 0 {
+		return nil
+	}
 	if t.bodyLease == nil || t.bodyLease.budget == nil {
 		t.SetBody(PrependHeaders(t.Data, headers), nil)
 		return nil
@@ -241,7 +245,7 @@ func (t *Tx) ApplyHeaders(headers []Header) error {
 	body := make([]byte, int(newSize))
 	copy(body, prefix)
 	copy(body[len(prefix):], t.Data)
-	t.SetBody(body, &BodyLease{budget:budget, size:newSize})
+	t.SetBody(body, &BodyLease{budget: budget, size: newSize})
 	return nil
 }
 
@@ -251,9 +255,13 @@ func (t *Tx) SetSenderPolicy(allowed func(string) bool) { t.senderPolicy = allow
 
 // ValidSender verifies the current message after body-changing plugins.
 func (t *Tx) ValidSender() bool {
-	if t.senderPolicy == nil { return true }
+	if t.senderPolicy == nil {
+		return true
+	}
 	from := ParseHeaders(t.Data)["from"]
-	if len(from) != 1 { return false }
+	if len(from) != 1 {
+		return false
+	}
 	addrs, err := mail.ParseAddressList(from[0])
 	return err == nil && len(addrs) == 1 && t.senderPolicy(addrs[0].Address)
 }

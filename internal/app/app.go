@@ -317,10 +317,10 @@ type Backends struct {
 
 // QueueStats reports spool counts.
 type QueueStats struct {
-	Queued      int `json:"queued"`
-	Failed      int `json:"failed"`
-	Quarantined int `json:"quarantined"`
-	Corrupt int `json:"corrupt"`
+	Queued           int    `json:"queued"`
+	Failed           int    `json:"failed"`
+	Quarantined      int    `json:"quarantined"`
+	Corrupt          int    `json:"corrupt"`
 	OldestCorruptAge string `json:"oldest_corrupt_age,omitempty"`
 }
 
@@ -337,10 +337,10 @@ func (a *App) Stats() Stats {
 		Backends:  Backends{Local: local, Outbound: outbound, Filter: filter},
 		Plugins:   a.Plugins.Entries(),
 		Queue: QueueStats{
-			Queued:      queued,
-			Failed:      failed,
-			Quarantined: countMessages(filepath.Join(a.Config.DataDir, "quarantine")),
-			Corrupt: corrupt,
+			Queued:           queued,
+			Failed:           failed,
+			Quarantined:      countMessages(filepath.Join(a.Config.DataDir, "quarantine")),
+			Corrupt:          corrupt,
 			OldestCorruptAge: oldestCorruptAge.Round(time.Second).String(),
 		},
 		QueuePath:     a.Config.Queue.Dir,
