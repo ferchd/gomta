@@ -229,18 +229,21 @@ func (m *memoryBudget) readBounded(r io.Reader, max int64) (data []byte, release
 				if newCapacity > max {
 					newCapacity = max
 				}
-				growth := newCapacity - int64(cap(data))
+				// Both slices coexist while copying; charge the new capacity
+				// before allocation and release the old charge afterwards.
 				budgetCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				reserveErr := m.acquire(budgetCtx, growth)
+				reserveErr := m.acquire(budgetCtx, newCapacity)
 				cancel()
 				if reserveErr != nil {
 					release()
 					return nil, func() {}, reserveErr
 				}
-				held += growth
+				oldSize := held
 				next := make([]byte, len(data), int(newCapacity))
 				copy(next, data)
 				data = next
+				held = newCapacity
+				if oldSize > 0 { m.release(oldSize) }
 			}
 			data = append(data, buf[:n]...)
 		} else if readErr == nil {
