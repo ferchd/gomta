@@ -20,9 +20,9 @@ func (l *BodyLease) Release() {
 		}
 	})
 }
-func (o *Outcome) releaseBodyLease() {
-	if o.bodyLease != nil {
-		o.bodyLease.Release()
-		o.bodyLease = nil
+func (pr *PluginResult) releaseBodyLease() {
+	if pr.bodyLease != nil {
+		pr.bodyLease.Release()
+		pr.bodyLease = nil
 	}
 }
