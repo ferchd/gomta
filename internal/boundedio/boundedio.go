@@ -18,7 +18,7 @@ type Capture struct {
 		Acquire(context.Context, int64) error
 		Release(int64)
 	}
-	buf      bytes.Buffer
+	data     []byte // backing capacity is never larger than Max
 	held     int64
 	exceeded bool
 }
@@ -28,7 +28,7 @@ func (c *Capture) Write(p []byte) (int, error) {
 		c.exceeded = true
 		return 0, ErrLimitExceeded
 	}
-	available := c.Max - c.buf.Len()
+	available := c.Max - len(c.data)
 	oversize := len(p) > available
 	if oversize {
 		p = p[:available]
@@ -43,15 +43,24 @@ func (c *Capture) Write(p []byte) (int, error) {
 		}
 		c.held += int64(len(p))
 	}
-	n, err := c.buf.Write(p)
+	need := len(c.data) + len(p)
+	if need > cap(c.data) {
+		capacity := cap(c.data) * 2
+		if capacity < need { capacity = need }
+		if capacity > c.Max { capacity = c.Max }
+		next := make([]byte, len(c.data), capacity)
+		copy(next, c.data)
+		c.data = next
+	}
+	c.data = append(c.data, p...)
 	if oversize {
 		c.exceeded = true
-		return n, ErrLimitExceeded
+		return len(p), ErrLimitExceeded
 	}
-	return n, err
+	return len(p), nil
 }
 
-func (c *Capture) Bytes() []byte  { return c.buf.Bytes() }
+func (c *Capture) Bytes() []byte  { return c.data }
 func (c *Capture) Exceeded() bool { return c.exceeded }
 
 // Truncate consumes all child-process stderr while retaining only Max bytes.
