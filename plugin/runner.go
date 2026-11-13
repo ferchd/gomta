@@ -249,7 +249,14 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 		sortResults(res.Outcomes)
 		for i := range res.Outcomes {
 			r.enforceBodyLimit(tx, &res.Outcomes[i])
-			r.applyOutcome(tx, &res.Outcomes[i], false)
+			if err := r.applyOutcome(tx, &res.Outcomes[i], false); err != nil {
+				res.Decision = TempFail(451, "4.3.1 Insufficient memory for message headers")
+				return res
+			}
+			if !tx.ValidSender() {
+				res.Decision = Reject(553, "5.7.1 From header changed to an unauthorized sender")
+				return res
+			}
 		}
 	}
 
@@ -257,7 +264,10 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 	// ordered plugins (especially DKIM signers) can see them.
 	if len(ordered) > 0 {
 		if hs := tx.TakeHeaders(); len(hs) > 0 {
-			tx.ApplyHeaders(hs)
+			if err := tx.ApplyHeaders(hs); err != nil {
+				res.Decision = TempFail(451, "4.3.1 Insufficient memory for message headers")
+				return res
+			}
 		}
 	}
 
@@ -293,7 +303,16 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 		}
 		pr.index = ie.index
 		r.enforceBodyLimit(tx, &pr)
-		r.applyOutcome(tx, &pr, true)
+		if err := r.applyOutcome(tx, &pr, true); err != nil {
+			res.Decision = TempFail(451, "4.3.1 Insufficient memory for message headers")
+			res.Outcomes = append(res.Outcomes, pr)
+			return res
+		}
+		if !tx.ValidSender() {
+			pr.Outcome = Reject(553, "5.7.1 From header changed to an unauthorized sender")
+			res.Outcomes = append(res.Outcomes, pr)
+			break // do not allow a later DKIM plugin to sign the changed sender
+		}
 		res.Outcomes = append(res.Outcomes, pr)
 	}
 
@@ -455,7 +474,7 @@ func changedMeta(before, after map[string]any) map[string]any {
 // applyOutcome merges metadata, tags, headers, and body changes into tx. When
 // immediate is true headers are prepended to the message right away, which is
 // required for ordered body transformers.
-func (r *Runner) applyOutcome(tx *Tx, pr *PluginResult, immediate bool) {
+func (r *Runner) applyOutcome(tx *Tx, pr *PluginResult, immediate bool) error {
 	outcome := pr.Outcome
 	if pr.Err != nil {
 		level := slog.LevelWarn
@@ -464,7 +483,7 @@ func (r *Runner) applyOutcome(tx *Tx, pr *PluginResult, immediate bool) {
 		}
 		pr.releaseBodyLease()
 		r.logger.Log(context.Background(), level, "plugin error", "plugin", pr.Name, "hook", pr.Hook, "error", pr.Err, "duration", pr.Duration)
-		return
+		return nil
 	}
 	for k, v := range pr.meta {
 		tx.SetMeta(k, v)
@@ -475,24 +494,20 @@ func (r *Runner) applyOutcome(tx *Tx, pr *PluginResult, immediate bool) {
 	if pr.Outcome.Action != ActionContinue {
 		r.logger.Debug("plugin decision", "plugin", pr.Name, "hook", pr.Hook, "action", pr.Outcome.Action, "code", pr.Outcome.Code, "message", pr.Outcome.Message, "duration", pr.Duration)
 	}
-	if immediate && len(outcome.Headers) > 0 {
-		tx.ApplyHeaders(outcome.Headers)
-	} else {
-		for _, h := range outcome.Headers {
-			tx.AddHeader(h.Name, h.Value)
-		}
-	}
-	for k, v := range outcome.Meta {
-		tx.SetMeta(k, v)
-	}
-	for _, tag := range outcome.Tags {
-		tx.SetMeta("tag."+tag, true)
-	}
+	for k, v := range outcome.Meta { tx.SetMeta(k, v) }
+	for _, tag := range outcome.Tags { tx.SetMeta("tag."+tag, true) }
+	// A combined Body+Headers result must apply headers to the new body.
 	if outcome.Body != nil {
 		tx.SetBody(outcome.Body, pr.bodyLease)
 		pr.bodyLease = nil
 	}
+	if immediate && len(outcome.Headers) > 0 {
+		if err := tx.ApplyHeaders(outcome.Headers); err != nil { return err }
+	} else {
+		for _, h := range outcome.Headers { tx.AddHeader(h.Name, h.Value) }
+	}
 	pr.releaseBodyLease()
+	return nil
 }
 
 func sortResults(results []PluginResult) {

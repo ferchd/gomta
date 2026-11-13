@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/mail"
 	"net/textproto"
 	"path/filepath"
 	"sort"
@@ -196,6 +197,7 @@ type Tx struct {
 	meta      map[string]any
 	headers   []Header
 	bodyLease *BodyLease
+	senderPolicy func(string) bool // parent-only authenticated sender validator
 }
 
 // NewTx returns an empty transaction.
@@ -218,12 +220,42 @@ func (t *Tx) SetBody(data []byte, lease *BodyLease) {
 	t.Size = int64(len(data))
 }
 
-// ApplyHeaders preserves the output lease while constructing a replacement
-// header-prefixed buffer. The reservation remains charged until Tx.Close.
-func (t *Tx) ApplyHeaders(headers []Header) {
-	if len(headers) > 0 {
-		t.SetBody(PrependHeaders(t.Data, headers), t.bodyLease)
+// ApplyHeaders charges for both live buffers while prepending headers.
+// It replaces the old reservation only after the new buffer has been copied.
+func (t *Tx) ApplyHeaders(headers []Header) error {
+	if len(headers) == 0 { return nil }
+	prefixed := PrependHeaders([]byte{0}, headers)
+	prefix := prefixed[:len(prefixed)-1]
+	if len(prefix) == 0 { return nil }
+	if t.bodyLease == nil || t.bodyLease.budget == nil {
+		t.SetBody(PrependHeaders(t.Data, headers), nil)
+		return nil
 	}
+	newSize := int64(len(prefix)) + int64(len(t.Data))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	budget := t.bodyLease.budget
+	if err := budget.Acquire(ctx, newSize); err != nil {
+		return fmt.Errorf("%w: header expansion: %v", ErrBudgetExceeded, err)
+	}
+	body := make([]byte, int(newSize))
+	copy(body, prefix)
+	copy(body[len(prefix):], t.Data)
+	t.SetBody(body, &BodyLease{budget:budget, size:newSize})
+	return nil
+}
+
+// SetSenderPolicy binds the authenticated policy only to the parent Tx.
+// Filter snapshots do not receive the validator and cannot disable it.
+func (t *Tx) SetSenderPolicy(allowed func(string) bool) { t.senderPolicy = allowed }
+
+// ValidSender verifies the current message after body-changing plugins.
+func (t *Tx) ValidSender() bool {
+	if t.senderPolicy == nil { return true }
+	from := ParseHeaders(t.Data)["from"]
+	if len(from) != 1 { return false }
+	addrs, err := mail.ParseAddressList(from[0])
+	return err == nil && len(addrs) == 1 && t.senderPolicy(addrs[0].Address)
 }
 
 // Close releases retained output and drops DATA when a transaction ends.
