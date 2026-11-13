@@ -47,7 +47,7 @@ type PluginResult struct {
 	headers []Header
 
 	// index is the plugin's position in the configured priority order.
-	index int
+	index     int
 	bodyLease *BodyLease // internal output lease; Outcome stays source-compatible
 }
 
