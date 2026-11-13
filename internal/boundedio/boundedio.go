@@ -46,8 +46,12 @@ func (c *Capture) Write(p []byte) (int, error) {
 	need := len(c.data) + len(p)
 	if need > cap(c.data) {
 		capacity := cap(c.data) * 2
-		if capacity < need { capacity = need }
-		if capacity > c.Max { capacity = c.Max }
+		if capacity < need {
+			capacity = need
+		}
+		if capacity > c.Max {
+			capacity = c.Max
+		}
 		next := make([]byte, len(c.data), capacity)
 		copy(next, c.data)
 		c.data = next

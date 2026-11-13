@@ -228,7 +228,8 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 				pr.index = ie.index
 				select {
 				case results <- pr:
-				case <-runCtx.Done(): pr.Outcome.releaseBodyLease()
+				case <-runCtx.Done():
+					pr.Outcome.releaseBodyLease()
 				}
 			}(ie)
 		}
@@ -272,7 +273,8 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 			pr := r.runOne(individualCtx, ie, hook, tx)
 			select {
 			case done <- pr:
-			case <-individualCtx.Done(): pr.Outcome.releaseBodyLease()
+			case <-individualCtx.Done():
+				pr.Outcome.releaseBodyLease()
 			}
 		}(ie)
 		var pr PluginResult
@@ -365,7 +367,11 @@ func (r *Runner) runOne(ctx context.Context, ie indexedEntry, hook Hook, tx *Tx)
 	}
 	defer r.releaseSnapshot(snapshotSize)
 	retainOutput := false
-	defer func() { if !retainOutput { r.releaseSnapshot(outputLimit) } }()
+	defer func() {
+		if !retainOutput {
+			r.releaseSnapshot(outputLimit)
+		}
+	}()
 	// No plugin receives the parent transaction. Even a callback that ignores
 	// cancellation can only mutate its isolated snapshot.
 	local := snapshotTx(tx)
@@ -375,7 +381,9 @@ func (r *Runner) runOne(ctx context.Context, ie indexedEntry, hook Hook, tx *Tx)
 		if rec := recover(); rec != nil {
 			pr.Err = fmt.Errorf("panic: %v", rec)
 		}
-		if pr.Err != nil { pr.Outcome.releaseBodyLease() }
+		if pr.Err != nil {
+			pr.Outcome.releaseBodyLease()
+		}
 		pr.Duration = time.Since(started)
 		if pr.Err == nil {
 			pr.meta = changedMeta(before, cloneMetaSnapshot(local.MetaSnapshot()))

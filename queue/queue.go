@@ -250,7 +250,9 @@ func (m *Manager) Start(ctx context.Context) error {
 		case <-ticker.C:
 			// Full directory walks are expensive with large deferred queues.
 			// Still reconcile every minute to detect external spool changes.
-			if deadline := m.nextScan.Load(); deadline > 0 && time.Now().UnixNano() < deadline { continue }
+			if deadline := m.nextScan.Load(); deadline > 0 && time.Now().UnixNano() < deadline {
+				continue
+			}
 			healthy = m.scan(ctx)
 			m.ready.Store(healthy && writable)
 		case <-m.wake:
@@ -275,7 +277,10 @@ func (m *Manager) worker(ctx context.Context) {
 			func() {
 				// Wake the scheduler after a job changes its on-disk state.
 				defer func() {
-					select { case m.wake <- struct{}{}: default: }
+					select {
+					case m.wake <- struct{}{}:
+					default:
+					}
 				}()
 				defer func() {
 					m.mu.Lock()
@@ -325,7 +330,7 @@ func (m *Manager) scan(ctx context.Context) bool {
 			m.logger.Error("queue: corrupt envelope", "id", id, "error", err)
 			if qerr := m.quarantineCorruptBytes(id, raw, "invalid envelope JSON: "+err.Error()); qerr != nil {
 				healthy = false
-				nextDue = now.Add(2*time.Second)
+				nextDue = now.Add(2 * time.Second)
 				m.logger.Error("queue: preserve corrupt envelope failed", "id", id, "error", qerr)
 			}
 			continue
@@ -336,7 +341,7 @@ func (m *Manager) scan(ctx context.Context) bool {
 			m.logger.Error("queue: invalid envelope", "id", id, "error", err)
 			if qerr := m.quarantineCorruptBytes(id, raw, "invalid envelope: "+err.Error()); qerr != nil {
 				healthy = false
-				nextDue = now.Add(2*time.Second)
+				nextDue = now.Add(2 * time.Second)
 				m.logger.Error("queue: preserve invalid envelope failed", "id", id, "error", qerr)
 			}
 			continue
@@ -350,7 +355,9 @@ func (m *Manager) scan(ctx context.Context) bool {
 			continue
 		}
 		if !env.NextAttempt.IsZero() && env.NextAttempt.After(now) {
-			if env.NextAttempt.Before(nextDue) { nextDue = env.NextAttempt }
+			if env.NextAttempt.Before(nextDue) {
+				nextDue = env.NextAttempt
+			}
 			continue
 		}
 		m.mu.Lock()
@@ -368,7 +375,7 @@ func (m *Manager) scan(ctx context.Context) bool {
 			m.mu.Lock()
 			delete(m.inflight, id)
 			m.mu.Unlock()
-			nextDue = now.Add(2*time.Second) // jobs channel full; retry soon
+			nextDue = now.Add(2 * time.Second) // jobs channel full; retry soon
 		}
 	}
 	m.nextScan.Store(nextDue.UnixNano())
@@ -1004,9 +1011,13 @@ func (m *Manager) quarantineMissingPayload(env *Envelope, cause error) error {
 // the visible envelope. Nothing is delivered once integrity is uncertain.
 func (m *Manager) quarantineUnrecoverablePayload(env *Envelope, reason string, payload []byte) error {
 	badDir := filepath.Join(m.cfg.Dir, "corrupt")
-	if err := os.MkdirAll(badDir, 0o700); err != nil { return err }
+	if err := os.MkdirAll(badDir, 0o700); err != nil {
+		return err
+	}
 	if payload != nil {
-		if err := atomicWrite(filepath.Join(badDir, env.ID+".eml"), payload, 0o600); err != nil { return err }
+		if err := atomicWrite(filepath.Join(badDir, env.ID+".eml"), payload, 0o600); err != nil {
+			return err
+		}
 	}
 	for i := range env.Recipients {
 		if env.Recipients[i].Status == "pending" || env.Recipients[i].Status == "" {
@@ -1081,7 +1092,6 @@ func (m *Manager) cleanupTemporaryFiles(dir string, cutoff time.Time) {
 		}
 	}
 }
-
 
 // validateEnvelope ensures that a parsed on-disk envelope cannot redirect
 // operations to another file (or outside the spool). It runs before *any*
