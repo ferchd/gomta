@@ -1223,3 +1223,21 @@ func syncQueueDirectory(dir string) error {
 	defer f.Close()
 	return f.Sync()
 }
+
+
+// CorruptStats reports the number of persisted corruption diagnostics and
+// the age of the oldest. Counting .reason includes incomplete quarantines
+// whose envelope has not yet been safely removed.
+func (m *Manager) CorruptStats() (count int, oldestAge time.Duration) {
+	entries, err := os.ReadDir(filepath.Join(m.cfg.Dir, "corrupt"))
+	if err != nil { return 0, 0 }
+	var oldest time.Time
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".reason") { continue }
+		count++
+		info, err := entry.Info()
+		if err == nil && (oldest.IsZero() || info.ModTime().Before(oldest)) { oldest = info.ModTime() }
+	}
+	if !oldest.IsZero() { oldestAge = time.Since(oldest) }
+	return
+}

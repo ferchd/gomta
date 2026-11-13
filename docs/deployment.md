@@ -531,3 +531,21 @@ identities. Retries of recently confirmed local messages avoid a full scan of
 The cache is only an optimization. After restart or eviction, GoMTA falls
 back to the exact `new/` lookup and, on retries, the `cur/` directory scan.
 It does not replace an on-disk exactly-once transaction log.
+
+
+## Seventh audit operations
+
+- Keep the spool on a local filesystem with reliable hard-link, fsync,
+  directory sync and exclusive-lock semantics. Avoid filesystems that do
+  not support atomic hard-link publication; startup may succeed but
+  message publication must fail closed.
+- Inspect `queue/corrupt/` when the new `/stats` `queue.corrupt` counter is
+  nonzero. Failed archive entries are never silently treated as intact
+  after a checksum discrepancy.
+- Concurrent DATA slice expansion temporarily holds both old and new
+  buffers; a tight memory budget may return 451 rather than exceeding the
+  declared reserve under load. Dimension memory limits with headroom for
+  TLS, runtime allocations and external plugin processes.
+- The optimized retry scheduler still fully reconciles the spool at least
+  every minute. A persistent indexed scheduler remains future work; do
+  not assume constant-time scans for very large queues.

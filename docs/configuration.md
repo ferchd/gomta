@@ -567,3 +567,31 @@ during mailbox delivery and quota reconciliation. Recent temporary writes
 are preserved. Mailbox lock entries are released when idle; retries can
 still perform a linear lookup in `cur/` when searching for an already read
 message.
+
+
+## Seventh audit: publication and integrity protections
+
+The spool publishes new payloads and envelopes **exclusively**. An existing
+message ID, including an envelope whose payload is absent, is rejected instead
+of silently overwritten. Initial publication uses a synced temporary file
+linked into the destination name; the spool filesystem must support hard
+links for this atomic no-clobber operation. Existing envelope state updates
+still use atomic replacement.
+
+The worker verifies the size and SHA-256 of modern payloads before delivery
+**and archival**. Oversized or corrupted payloads are identified before
+allocating an in-memory message, and the original on-disk payload is retained
+under `queue/corrupt/` using a hard link. Legacy queue files without
+checksums are still subject to the configured maximum message size. If the
+filesystem cannot preserve corruption evidence safely, the active record is
+not removed.
+
+Authenticated messages revalidate the RFC5322 `From` identity after
+content-transforming plugins, before later ordered signing plugins and again
+before queue publication. Plugins cannot change their own authenticated
+sender validation policy.
+
+The `/stats` queue object now includes `corrupt` and
+`oldest_corrupt_age` in addition to `quarantined`. The former counts
+recovery diagnostics under `queue/corrupt/`; the latter counts content
+quarantined by policy.
