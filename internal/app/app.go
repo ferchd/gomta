@@ -102,6 +102,7 @@ func LoadWithOptions(configPath string, opts LoadOptions) (*App, error) {
 	}
 	qm, err := queue.New(queue.Config{
 		Dir:             cfg.Queue.Dir,
+		MaxMessageBytes: cfg.Limits.MaxMessageBytes,
 		Workers:         cfg.Queue.Workers,
 		MaxAttempts:     cfg.Queue.MaxAttempts,
 		MaxAge:          cfg.Queue.MaxAge.Std(),
