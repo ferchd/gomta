@@ -222,13 +222,17 @@ func TestMaildirRetiresUnusedMailboxLocks(t *testing.T) {
 }
 
 func TestMaildirRecentDeliveryCacheIsBounded(t *testing.T) {
-	b:=&maildirBackend{}
-	for i:=0;i<maxRecentMaildirDeliveries+50;i++ {
-		b.rememberDelivery("example.test/alice",fmt.Sprintf("message-%d",i))
+	b := &maildirBackend{}
+	for i := 0; i < maxRecentMaildirDeliveries+50; i++ {
+		b.rememberDelivery("example.test/alice", fmt.Sprintf("message-%d", i))
 	}
 	b.cacheMu.Lock()
-	n:=len(b.recentDelivery)
+	n := len(b.recentDelivery)
 	b.cacheMu.Unlock()
-	if n!=maxRecentMaildirDeliveries {t.Fatalf("unbounded recent-delivery cache: %d",n)}
-	if !b.wasRecentlyDelivered("example.test/alice",fmt.Sprintf("message-%d",maxRecentMaildirDeliveries+49)) {t.Fatal("recent successful delivery not recorded")}
+	if n != maxRecentMaildirDeliveries {
+		t.Fatalf("unbounded recent-delivery cache: %d", n)
+	}
+	if !b.wasRecentlyDelivered("example.test/alice", fmt.Sprintf("message-%d", maxRecentMaildirDeliveries+49)) {
+		t.Fatal("recent successful delivery not recorded")
+	}
 }
