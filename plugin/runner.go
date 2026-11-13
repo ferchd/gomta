@@ -494,17 +494,25 @@ func (r *Runner) applyOutcome(tx *Tx, pr *PluginResult, immediate bool) error {
 	if pr.Outcome.Action != ActionContinue {
 		r.logger.Debug("plugin decision", "plugin", pr.Name, "hook", pr.Hook, "action", pr.Outcome.Action, "code", pr.Outcome.Code, "message", pr.Outcome.Message, "duration", pr.Duration)
 	}
-	for k, v := range outcome.Meta { tx.SetMeta(k, v) }
-	for _, tag := range outcome.Tags { tx.SetMeta("tag."+tag, true) }
+	for k, v := range outcome.Meta {
+		tx.SetMeta(k, v)
+	}
+	for _, tag := range outcome.Tags {
+		tx.SetMeta("tag."+tag, true)
+	}
 	// A combined Body+Headers result must apply headers to the new body.
 	if outcome.Body != nil {
 		tx.SetBody(outcome.Body, pr.bodyLease)
 		pr.bodyLease = nil
 	}
 	if immediate && len(outcome.Headers) > 0 {
-		if err := tx.ApplyHeaders(outcome.Headers); err != nil { return err }
+		if err := tx.ApplyHeaders(outcome.Headers); err != nil {
+			return err
+		}
 	} else {
-		for _, h := range outcome.Headers { tx.AddHeader(h.Name, h.Value) }
+		for _, h := range outcome.Headers {
+			tx.AddHeader(h.Name, h.Value)
+		}
 	}
 	pr.releaseBodyLease()
 	return nil

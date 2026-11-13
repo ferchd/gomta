@@ -136,11 +136,15 @@ func TestProgressiveDATARejectsOversizeAndReleasesMemory(t *testing.T) {
 }
 
 func TestDATAAccountingIncludesOverlappingSliceCopy(t *testing.T) {
-	budget:=newMemoryBudget(80<<10)
-	_,release,err:=budget.readBounded(strings.NewReader(strings.Repeat("A",40<<10)),64<<10)
+	budget := newMemoryBudget(80 << 10)
+	_, release, err := budget.readBounded(strings.NewReader(strings.Repeat("A", 40<<10)), 64<<10)
 	release()
-	if err==nil {t.Fatal("overlapping DATA buffers bypassed memory budget")}
+	if err == nil {
+		t.Fatal("overlapping DATA buffers bypassed memory budget")
+	}
 	budget.mu.Lock()
 	defer budget.mu.Unlock()
-	if budget.used!=0 {t.Fatalf("DATA reservation leaked: %d",budget.used)}
+	if budget.used != 0 {
+		t.Fatalf("DATA reservation leaked: %d", budget.used)
+	}
 }

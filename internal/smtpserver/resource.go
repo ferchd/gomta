@@ -243,7 +243,9 @@ func (m *memoryBudget) readBounded(r io.Reader, max int64) (data []byte, release
 				copy(next, data)
 				data = next
 				held = newCapacity
-				if oldSize > 0 { m.release(oldSize) }
+				if oldSize > 0 {
+					m.release(oldSize)
+				}
 			}
 			data = append(data, buf[:n]...)
 		} else if readErr == nil {

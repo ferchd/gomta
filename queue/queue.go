@@ -1133,7 +1133,6 @@ func validateEnvelope(filenameID string, env *Envelope) error {
 	return nil
 }
 
-
 // errPayloadCorrupt distinguishes content integrity failures from transient
 // filesystem errors and stops delivery before any external side effects.
 var errPayloadCorrupt = errors.New("queue: payload integrity violation")
@@ -1144,11 +1143,17 @@ var errPayloadCorrupt = errors.New("queue: payload integrity violation")
 func (m *Manager) readVerifiedPayload(env *Envelope) ([]byte, error) {
 	_, path := m.paths(env.ID)
 	f, err := os.Open(path)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	defer f.Close()
 	info, err := f.Stat()
-	if err != nil { return nil, err }
-	if !info.Mode().IsRegular() { return nil, fmt.Errorf("%w: not a regular file", errPayloadCorrupt) }
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("%w: not a regular file", errPayloadCorrupt)
+	}
 	if info.Size() > m.cfg.MaxMessageBytes {
 		return nil, fmt.Errorf("%w: payload size %d exceeds %d", errPayloadCorrupt, info.Size(), m.cfg.MaxMessageBytes)
 	}
@@ -1158,14 +1163,20 @@ func (m *Manager) readVerifiedPayload(env *Envelope) ([]byte, error) {
 		}
 		hash := sha256.New()
 		n, err := io.Copy(hash, io.LimitReader(f, m.cfg.MaxMessageBytes+1))
-		if err != nil { return nil, err }
+		if err != nil {
+			return nil, err
+		}
 		if n != env.PayloadSize || !strings.EqualFold(hex.EncodeToString(hash.Sum(nil)), env.PayloadSHA256) {
 			return nil, fmt.Errorf("%w: payload SHA-256 mismatch", errPayloadCorrupt)
 		}
-		if _, err := f.Seek(0, io.SeekStart); err != nil { return nil, err }
+		if _, err := f.Seek(0, io.SeekStart); err != nil {
+			return nil, err
+		}
 	}
 	msg, err := io.ReadAll(io.LimitReader(f, m.cfg.MaxMessageBytes+1))
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	if int64(len(msg)) > m.cfg.MaxMessageBytes {
 		return nil, fmt.Errorf("%w: payload grew during read", errPayloadCorrupt)
 	}
@@ -1185,10 +1196,14 @@ func (m *Manager) preserveCorruptPayload(id, badDir string, fallback []byte) err
 	dst := filepath.Join(badDir, id+".eml")
 	if err := os.Link(src, dst); err != nil {
 		if os.IsNotExist(err) {
-			if fallback == nil { return nil }
+			if fallback == nil {
+				return nil
+			}
 			return atomicCreateExclusive(dst, fallback, 0o600)
 		}
-		if !os.IsExist(err) { return fmt.Errorf("preserve corrupt payload: %w", err) }
+		if !os.IsExist(err) {
+			return fmt.Errorf("preserve corrupt payload: %w", err)
+		}
 		a, aErr := os.Stat(src)
 		b, bErr := os.Stat(dst)
 		if aErr != nil || bErr != nil || !os.SameFile(a, b) {
@@ -1204,40 +1219,68 @@ func (m *Manager) preserveCorruptPayload(id, badDir string, fallback []byte) err
 // still use atomicWrite for their validated state transitions.
 func atomicCreateExclusive(path string, data []byte, mode os.FileMode) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil { return err }
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
 	tmp, err := os.CreateTemp(dir, ".tmp-*")
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer os.Remove(tmp.Name())
-	if err := tmp.Chmod(mode); err != nil { _ = tmp.Close(); return err }
-	if _, err := tmp.Write(data); err != nil { _ = tmp.Close(); return err }
-	if err := tmp.Sync(); err != nil { _ = tmp.Close(); return err }
-	if err := tmp.Close(); err != nil { return err }
-	if err := os.Link(tmp.Name(), path); err != nil { return err }
+	if err := tmp.Chmod(mode); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Link(tmp.Name(), path); err != nil {
+		return err
+	}
 	return syncQueueDirectory(dir)
 }
 
 func syncQueueDirectory(dir string) error {
-	if runtime.GOOS == "windows" { return nil }
+	if runtime.GOOS == "windows" {
+		return nil
+	}
 	f, err := os.Open(dir)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer f.Close()
 	return f.Sync()
 }
-
 
 // CorruptStats reports the number of persisted corruption diagnostics and
 // the age of the oldest. Counting .reason includes incomplete quarantines
 // whose envelope has not yet been safely removed.
 func (m *Manager) CorruptStats() (count int, oldestAge time.Duration) {
 	entries, err := os.ReadDir(filepath.Join(m.cfg.Dir, "corrupt"))
-	if err != nil { return 0, 0 }
+	if err != nil {
+		return 0, 0
+	}
 	var oldest time.Time
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".reason") { continue }
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".reason") {
+			continue
+		}
 		count++
 		info, err := entry.Info()
-		if err == nil && (oldest.IsZero() || info.ModTime().Before(oldest)) { oldest = info.ModTime() }
+		if err == nil && (oldest.IsZero() || info.ModTime().Before(oldest)) {
+			oldest = info.ModTime()
+		}
 	}
-	if !oldest.IsZero() { oldestAge = time.Since(oldest) }
+	if !oldest.IsZero() {
+		oldestAge = time.Since(oldest)
+	}
 	return
 }
