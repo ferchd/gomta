@@ -359,9 +359,9 @@ func (s *session) Data(r io.Reader) error {
 	}
 
 	if headers := s.tx.TakeHeaders(); len(headers) > 0 {
-		s.tx.SetBody(plugin.PrependHeaders(s.tx.Data, headers), nil)
+		s.tx.ApplyHeaders(headers)
 	}
-	s.tx.SetBody(plugin.PrependHeaders(s.tx.Data, []plugin.Header{receivedHeader(s.tx)}), nil)
+	s.tx.ApplyHeaders([]plugin.Header{receivedHeader(s.tx)})
 	if s.tx.Size > max {
 		return smtpError(552, 5, 3, 4, "Message exceeds maximum size after adding headers")
 	}
@@ -382,7 +382,7 @@ func (s *session) Data(r io.Reader) error {
 		return s.quarantineAndAccept(fmt.Sprintf("quarantined at queue: %s", res.Decision.Message))
 	}
 	if headers := s.tx.TakeHeaders(); len(headers) > 0 {
-		s.tx.SetBody(plugin.PrependHeaders(s.tx.Data, headers), nil)
+		s.tx.ApplyHeaders(headers)
 	}
 	if s.tx.Size > max {
 		return smtpError(552, 5, 3, 4, "Message exceeds maximum size after queue headers")

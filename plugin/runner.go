@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -255,7 +256,7 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 	// ordered plugins (especially DKIM signers) can see them.
 	if len(ordered) > 0 {
 		if hs := tx.TakeHeaders(); len(hs) > 0 {
-			tx.SetBody(PrependHeaders(tx.Data, hs), nil)
+			tx.ApplyHeaders(hs)
 		}
 	}
 
@@ -304,7 +305,10 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 		outcome := pr.Outcome
 		if pr.Err != nil {
 			outcome = ContinueOutcome()
-			if e := r.entry(hook, pr.Name); e != nil && e.failClosed {
+			e := r.entry(hook, pr.Name)
+			if errors.Is(pr.Err, ErrBudgetExceeded) || (e != nil && e.failClosed) {
+				// Resource admission failure is never a valid "pass" decision
+				// for a policy filter, even when its regular failures fail open.
 				outcome = TempFail(451, "4.7.1 Local policy check failed")
 			}
 		}
@@ -362,7 +366,7 @@ func (r *Runner) runOne(ctx context.Context, ie indexedEntry, hook Hook, tx *Tx)
 		}
 	}
 	if err := r.reserveSnapshot(pluginCtx, snapshotSize+outputLimit); err != nil {
-		pr.Err = err
+		pr.Err = fmt.Errorf("%w: %v", ErrBudgetExceeded, err)
 		return
 	}
 	defer r.releaseSnapshot(snapshotSize)
@@ -471,7 +475,7 @@ func (r *Runner) applyOutcome(tx *Tx, pr *PluginResult, immediate bool) {
 		r.logger.Debug("plugin decision", "plugin", pr.Name, "hook", pr.Hook, "action", pr.Outcome.Action, "code", pr.Outcome.Code, "message", pr.Outcome.Message, "duration", pr.Duration)
 	}
 	if immediate && len(outcome.Headers) > 0 {
-		tx.SetBody(PrependHeaders(tx.Data, outcome.Headers), nil)
+		tx.ApplyHeaders(outcome.Headers)
 	} else {
 		for _, h := range outcome.Headers {
 			tx.AddHeader(h.Name, h.Value)
