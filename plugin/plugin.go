@@ -142,8 +142,7 @@ type Outcome struct {
 	// Meta is merged into the transaction metadata.
 	Meta map[string]any
 	// Tags are diagnostic labels, e.g. "spam" or "dkim-verified".
-	Tags      []string
-	bodyLease *BodyLease // follows retained Body when applied
+	Tags []string
 }
 
 // Header is a single RFC 5322 header field.

@@ -48,6 +48,7 @@ type PluginResult struct {
 
 	// index is the plugin's position in the configured priority order.
 	index int
+	bodyLease *BodyLease // internal output lease; Outcome stays source-compatible
 }
 
 // Result is the merged result of a hook.
@@ -230,7 +231,7 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 				select {
 				case results <- pr:
 				case <-runCtx.Done():
-					pr.Outcome.releaseBodyLease()
+					pr.releaseBodyLease()
 				}
 			}(ie)
 		}
@@ -275,7 +276,7 @@ func (r *Runner) Run(ctx context.Context, hook Hook, tx *Tx) Result {
 			select {
 			case done <- pr:
 			case <-individualCtx.Done():
-				pr.Outcome.releaseBodyLease()
+				pr.releaseBodyLease()
 			}
 		}(ie)
 		var pr PluginResult
@@ -386,7 +387,7 @@ func (r *Runner) runOne(ctx context.Context, ie indexedEntry, hook Hook, tx *Tx)
 			pr.Err = fmt.Errorf("panic: %v", rec)
 		}
 		if pr.Err != nil {
-			pr.Outcome.releaseBodyLease()
+			pr.releaseBodyLease()
 		}
 		pr.Duration = time.Since(started)
 		if pr.Err == nil {
@@ -406,7 +407,7 @@ func (r *Runner) runOne(ctx context.Context, ie indexedEntry, hook Hook, tx *Tx)
 		}
 		// The bounded capture never grows beyond its configured cap.
 		r.releaseSnapshot(outputLimit - retained)
-		pr.Outcome.bodyLease = &BodyLease{budget: r.budget, size: retained}
+		pr.bodyLease = &BodyLease{budget: r.budget, size: retained}
 		retainOutput = true
 	}
 	return
@@ -461,7 +462,7 @@ func (r *Runner) applyOutcome(tx *Tx, pr *PluginResult, immediate bool) {
 		if pr.Err == context.DeadlineExceeded || pr.Err == context.Canceled {
 			level = slog.LevelDebug
 		}
-		pr.Outcome.releaseBodyLease()
+		pr.releaseBodyLease()
 		r.logger.Log(context.Background(), level, "plugin error", "plugin", pr.Name, "hook", pr.Hook, "error", pr.Err, "duration", pr.Duration)
 		return
 	}
@@ -488,10 +489,10 @@ func (r *Runner) applyOutcome(tx *Tx, pr *PluginResult, immediate bool) {
 		tx.SetMeta("tag."+tag, true)
 	}
 	if outcome.Body != nil {
-		tx.SetBody(outcome.Body, pr.Outcome.bodyLease)
-		pr.Outcome.bodyLease = nil
+		tx.SetBody(outcome.Body, pr.bodyLease)
+		pr.bodyLease = nil
 	}
-	pr.Outcome.releaseBodyLease()
+	pr.releaseBodyLease()
 }
 
 func sortResults(results []PluginResult) {
@@ -611,7 +612,7 @@ func (r *Runner) enforceBodyLimit(tx *Tx, pr *PluginResult) {
 		return
 	}
 	if int64(len(pr.Outcome.Body)) > tx.MaxBodyBytes {
-		pr.Outcome.releaseBodyLease()
+		pr.releaseBodyLease()
 		pr.Outcome = TempFail(451, "4.3.1 Content filter exceeded maximum message size")
 		pr.meta = nil
 		pr.headers = nil
