@@ -3,6 +3,8 @@ package plugin
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sync"
 	"io"
 	"log/slog"
 	"strings"
@@ -279,4 +281,87 @@ func TestRunnerRejectsOversizedPluginBodyBeforeApplyingIt(t *testing.T) {
 	if string(tx.Data) != "original" {
 		t.Fatalf("oversized body applied: %q", tx.Data)
 	}
+}
+
+type prepaidBodyPlugin struct {
+	budget *ByteBudget
+	limit int64
+	bodySize int
+}
+func (*prepaidBodyPlugin) Name() string { return "prepaid-test" }
+func (*prepaidBodyPlugin) Hooks() []Hook { return []Hook{HookData} }
+func (*prepaidBodyPlugin) RunOrdered() bool { return true }
+func (p *prepaidBodyPlugin) OutputReservationBytes() int64 { return p.limit }
+func (p *prepaidBodyPlugin) Run(_ context.Context, _ Hook, tx *Tx) (Outcome, error) {
+	p.budget.mu.Lock()
+	used:=p.budget.used
+	p.budget.mu.Unlock()
+	expected:=int64(len(tx.Data))+p.limit
+	if used < expected { return OK(), fmt.Errorf("prepaid only %d of %d", used,expected) }
+	body:=make([]byte,p.bodySize,p.bodySize+8)
+	for i:=range body {body[i]='x'}
+	return Outcome{Action:ActionContinue,Body:body},nil
+}
+func TestPrepaidBodyLeasePersistsUntilTransactionCloses(t *testing.T) {
+	p:=&prepaidBodyPlugin{limit:48,bodySize:16}
+	r:=newTestRunner(t,map[Hook][]entry{HookData:{testEntry(p,0,0)}})
+	r.budget=NewByteBudget(96)
+	p.budget=r.budget
+	tx:=NewTx()
+	tx.Data=make([]byte,40)
+	tx.MaxBodyBytes=100
+	out:=r.Run(context.Background(),HookData,tx)
+	if out.Rejected(){t.Fatalf("unexpected policy failure: %+v",out)}
+	r.budget.mu.Lock()
+	used:=r.budget.used
+	r.budget.mu.Unlock()
+	if used!=24 {t.Fatalf("body reservation released too soon: %d",used)}
+	tx.Close()
+	r.budget.mu.Lock()
+	used=r.budget.used
+	r.budget.mu.Unlock()
+	if used!=0 {t.Fatalf("body lease not released: %d",used)}
+}
+func TestOversizedPrepaidBodyReleasesReservation(t *testing.T) {
+	p:=&prepaidBodyPlugin{limit:48,bodySize:16}
+	r:=newTestRunner(t,map[Hook][]entry{HookData:{testEntry(p,0,0)}})
+	r.budget=NewByteBudget(96)
+	p.budget=r.budget
+	tx:=NewTx()
+	tx.Data=make([]byte,40)
+	tx.MaxBodyBytes=8
+	out:=r.Run(context.Background(),HookData,tx)
+	if !out.Rejected() {t.Fatal("oversized output was accepted")}
+	r.budget.mu.Lock()
+	used:=r.budget.used
+	r.budget.mu.Unlock()
+	if used!=0 {t.Fatalf("rejected buffer retained reservation: %d",used)}
+	tx.Close()
+}
+func TestPrepaidConcurrentFiltersMakeProgressWithoutCircularWait(t *testing.T) {
+	p:=&prepaidBodyPlugin{limit:48,bodySize:16}
+	r:=newTestRunner(t,map[Hook][]entry{HookData:{testEntry(p,0,0)}})
+	r.budget=NewByteBudget(96)
+	r.timeout=2*time.Second
+	p.budget=r.budget
+	var wg sync.WaitGroup
+	errCh:=make(chan error,3)
+	for i:=0;i<3;i++ {
+		wg.Add(1)
+		go func(){
+			defer wg.Done()
+			tx:=NewTx()
+			tx.Data=make([]byte,40)
+			tx.MaxBodyBytes=100
+			out:=r.Run(context.Background(),HookData,tx)
+			if out.Rejected(){errCh<-fmt.Errorf("prepaid filter rejected: %+v",out)}
+			tx.Close()
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err:=range errCh {t.Error(err)}
+	r.budget.mu.Lock()
+	defer r.budget.mu.Unlock()
+	if r.budget.used!=0 {t.Fatalf("budget leak: %d",r.budget.used)}
 }
