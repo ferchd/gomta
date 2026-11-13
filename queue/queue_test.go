@@ -563,3 +563,15 @@ func TestLegacyMessageUsesSizeCeiling(t *testing.T) {
 	if err:=atomicWrite(filepath.Join(m.cfg.Dir,"legacy.eml"),[]byte("0123456789012345"),0o600);err!=nil {t.Fatal(err)}
 	if _,err:=m.readVerifiedPayload(env);!errors.Is(err,errPayloadCorrupt){t.Fatalf("legacy limit bypassed: %v",err)}
 }
+
+func TestCorruptStatsCountDiagnosticMarkers(t *testing.T) {
+	m,err:=New(Config{Dir:t.TempDir()},testRouter{})
+	if err!=nil {t.Fatal(err)}
+	folder:=filepath.Join(m.cfg.Dir,"corrupt")
+	if err:=os.MkdirAll(folder,0o700);err!=nil {t.Fatal(err)}
+	if err:=os.WriteFile(filepath.Join(folder,"a.reason"),[]byte("bad"),0o600);err!=nil {t.Fatal(err)}
+	if err:=os.WriteFile(filepath.Join(folder,"b.reason"),[]byte("bad"),0o600);err!=nil {t.Fatal(err)}
+	if err:=os.WriteFile(filepath.Join(folder,"a.json"),[]byte("{}"),0o600);err!=nil {t.Fatal(err)}
+	count,age:=m.CorruptStats()
+	if count!=2 || age<0 {t.Fatalf("incorrect corrupt stats: count=%d age=%s",count,age)}
+}

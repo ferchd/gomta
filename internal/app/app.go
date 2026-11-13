@@ -320,11 +320,14 @@ type QueueStats struct {
 	Queued      int `json:"queued"`
 	Failed      int `json:"failed"`
 	Quarantined int `json:"quarantined"`
+	Corrupt int `json:"corrupt"`
+	OldestCorruptAge string `json:"oldest_corrupt_age,omitempty"`
 }
 
 // Stats returns a point-in-time snapshot.
 func (a *App) Stats() Stats {
 	queued, failed := a.Queue.Stats()
+	corrupt, oldestCorruptAge := a.Queue.CorruptStats()
 	local, outbound, filter := a.Router.Backends()
 	return Stats{
 		Hostname:  a.Config.Hostname,
@@ -337,6 +340,8 @@ func (a *App) Stats() Stats {
 			Queued:      queued,
 			Failed:      failed,
 			Quarantined: countMessages(filepath.Join(a.Config.DataDir, "quarantine")),
+			Corrupt: corrupt,
+			OldestCorruptAge: oldestCorruptAge.Round(time.Second).String(),
 		},
 		QueuePath:     a.Config.Queue.Dir,
 		Users:         a.Users.Len(),
