@@ -49,6 +49,8 @@ type Envelope struct {
 	Updated          time.Time         `json:"updated"`
 	NextAttempt      time.Time         `json:"next_attempt"`
 	Attempts         int               `json:"attempts"`
+	PayloadSize      int64             `json:"payload_size,omitempty"`
+	PayloadSHA256    string            `json:"payload_sha256,omitempty"`
 }
 
 // Pending returns recipients still awaiting delivery.
@@ -190,6 +192,11 @@ func (m *Manager) Enqueue(ctx context.Context, env *Envelope, msg []byte) error 
 			env.Recipients[i].Status = "pending"
 		}
 	}
+	// The checksum is part of the durable envelope, not an untrusted caller
+	// supplied value. Legacy envelopes without these fields remain readable.
+	sum := sha256.Sum256(msg)
+	env.PayloadSize = int64(len(msg))
+	env.PayloadSHA256 = hex.EncodeToString(sum[:])
 	jsonPath, msgPath := m.paths(env.ID)
 	if err := atomicWrite(msgPath, msg, 0o600); err != nil {
 		return fmt.Errorf("queue: write message: %w", err)
@@ -313,6 +320,16 @@ func (m *Manager) scan(ctx context.Context) bool {
 			}
 			continue
 		}
+		// Never use an ID from persistent JSON to select a different file.
+		// Validate before DSN publication, routing, archival or deletion.
+		if err := validateEnvelope(id, &env); err != nil {
+			healthy = false
+			m.logger.Error("queue: invalid envelope", "id", id, "error", err)
+			if qerr := m.quarantineCorruptBytes(id, raw, "invalid envelope: "+err.Error()); qerr != nil {
+				m.logger.Error("queue: preserve invalid envelope failed", "id", id, "error", qerr)
+			}
+			continue
+		}
 		if err := m.sendFailureReports(&env); err != nil {
 			healthy = false
 			m.logger.Error("queue: notify failed recipients", "id", env.ID, "error", err)
@@ -359,6 +376,17 @@ func (m *Manager) process(ctx context.Context, env *Envelope) {
 		env.NextAttempt = time.Now().Add(m.retryDelay(env.Attempts))
 		_ = atomicWrite(jsonPath, mustJSON(env), 0o600)
 		return
+	}
+	// Old queue entries without an integrity digest remain compatible.
+	// New entries must match both their committed size and SHA-256.
+	if env.PayloadSHA256 != "" {
+		sum := sha256.Sum256(msg)
+		if int64(len(msg)) != env.PayloadSize || !strings.EqualFold(hex.EncodeToString(sum[:]), env.PayloadSHA256) {
+			if qerr := m.quarantineUnrecoverablePayload(env, "payload size or SHA-256 differs from committed envelope", msg); qerr != nil {
+				m.logger.Error("queue: preserve corrupt payload failed", "id", env.ID, "error", qerr)
+			}
+			return
+		}
 	}
 	if len(env.Pending()) == 0 {
 		m.finish(env, msg)
@@ -955,17 +983,23 @@ func (m *Manager) cleanupSpool(now time.Time) {
 // after its complete metadata and a diagnostic have been durably preserved.
 // A transient permission or I/O error is NOT treated as a missing payload.
 func (m *Manager) quarantineMissingPayload(env *Envelope, cause error) error {
-	reason := "original message payload is missing: " + cause.Error()
+	return m.quarantineUnrecoverablePayload(env, "original message payload is missing: "+cause.Error(), nil)
+}
+
+// quarantineUnrecoverablePayload preserves any existing bytes before removing
+// the visible envelope. Nothing is delivered once integrity is uncertain.
+func (m *Manager) quarantineUnrecoverablePayload(env *Envelope, reason string, payload []byte) error {
+	badDir := filepath.Join(m.cfg.Dir, "corrupt")
+	if err := os.MkdirAll(badDir, 0o700); err != nil { return err }
+	if payload != nil {
+		if err := atomicWrite(filepath.Join(badDir, env.ID+".eml"), payload, 0o600); err != nil { return err }
+	}
 	for i := range env.Recipients {
 		if env.Recipients[i].Status == "pending" || env.Recipients[i].Status == "" {
 			env.Recipients[i].Status = "failed"
 			env.Recipients[i].LastError = reason
 			env.Recipients[i].Updated = time.Now()
 		}
-	}
-	badDir := filepath.Join(m.cfg.Dir, "corrupt")
-	if err := os.MkdirAll(badDir, 0o700); err != nil {
-		return err
 	}
 	if err := atomicWrite(filepath.Join(badDir, env.ID+".reason"), []byte(reason+"\n"), 0o600); err != nil {
 		return err
@@ -1032,4 +1066,48 @@ func (m *Manager) cleanupTemporaryFiles(dir string, cutoff time.Time) {
 			m.logger.Warn("spool cleanup: cannot remove abandoned temp", "dir", dir, "name", entry.Name(), "error", err)
 		}
 	}
+}
+
+
+// validateEnvelope ensures that a parsed on-disk envelope cannot redirect
+// operations to another file (or outside the spool). It runs before *any*
+// side effects from a recovered record.
+func validateEnvelope(filenameID string, env *Envelope) error {
+	if filenameID == "" || strings.ContainsAny(filenameID, "/\\") || strings.Contains(filenameID, "..") {
+		return errors.New("invalid spool filename ID")
+	}
+	if env.ID != filenameID {
+		return fmt.Errorf("embedded ID %q does not match spool entry %q", env.ID, filenameID)
+	}
+	if len(env.Recipients) == 0 {
+		return errors.New("envelope contains no recipients")
+	}
+	if !plugin.ValidAddress(env.From, true) {
+		return errors.New("invalid envelope sender")
+	}
+	if env.Attempts < 0 || env.PayloadSize < 0 {
+		return errors.New("negative envelope counter or payload size")
+	}
+	if env.PayloadSHA256 != "" {
+		digest, err := hex.DecodeString(env.PayloadSHA256)
+		if err != nil || len(digest) != sha256.Size {
+			return errors.New("invalid payload SHA-256")
+		}
+	}
+	seen := make(map[string]bool, len(env.Recipients))
+	for _, recipient := range env.Recipients {
+		if !plugin.ValidAddress(recipient.Address, false) || recipient.Attempts < 0 {
+			return errors.New("invalid recipient or attempt counter")
+		}
+		if seen[recipient.Address] {
+			return fmt.Errorf("duplicate recipient %q", recipient.Address)
+		}
+		seen[recipient.Address] = true
+		switch recipient.Status {
+		case "", "pending", "delivered", "failed":
+		default:
+			return fmt.Errorf("unknown recipient state %q", recipient.Status)
+		}
+	}
+	return nil
 }
